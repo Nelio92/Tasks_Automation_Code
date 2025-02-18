@@ -1,4 +1,4 @@
-""" HR Parts WITH NORMALIZATION """
+""" Find data based on provided URLs in a table and copy them to a particular folder """
 
 """ Import of all relevant packages for the job"""
 import numpy as np
@@ -15,7 +15,6 @@ import shutil
 #import time as tm
 
 """     Define the path where to find the tables and open them sequentially """
-#path = '/home/pi/workspace/ergodata_Patient1.xls'
 pathData = 'C:/UserData/TE_CTRX/CTRX8191B/Site_0_Issue/*.csv'
 files = gb.glob(pathData)
 filesNamesArr = []
@@ -24,9 +23,9 @@ for file, testerNr in zip(files, range(1, len(files)+1)):
     testerNr = re.search(r'UF\d+', file).group()
     print("")
     print("Tester {}".format(testerNr))
-    filesNames = pd.read_csv(file, header=0, sep="\t", skipinitialspace=True, usecols=col)      # Path names to the raw data
+    filesNames = pd.read_csv(file, header=0, sep="\t", skipinitialspace=True, usecols=col) # Path names to the raw data
     #print (filesNames.head())
-    filesNamesArr = np.array(filesNames)#,dtype=str)
+    filesNamesArr = np.array(filesNames)
     """ Create a folder for each tester where the raw data will be copied """
     pathFolder = Path('C:/UserData/TE_CTRX/CTRX8191B/Site_0_Issue/{}'.format(testerNr))
     if pathFolder.exists()==False:
