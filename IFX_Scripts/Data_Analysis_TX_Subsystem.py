@@ -8,6 +8,7 @@ import re
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+import tempfile
 # import numpy as np
 
 
@@ -90,9 +91,30 @@ else:
             if header_row is None:
                 print("  - Warning: Could not find header 'Test Nr'. Skipping file.")
                 continue
-
-            # Load the data starting from the header row
-            df = pd.read_csv(file_path, sep=';', low_memory=False)
+            
+            # Read all lines from the file
+            with open(file_path, 'r', encoding='latin1') as f:
+                all_lines = f.readlines()
+            
+            # Keep the header row (row 1) and skip rows 2-42 (indices 1-41 after header)
+            # Rows to remove are typically metadata like VNr, LOT, SUBLOT, WAFER, etc.
+            filtered_lines = [all_lines[header_row]]  # Keep the header row
+            
+            # Add all rows after row 42 (index header_row + 42)
+            for i in range(header_row + 1, len(all_lines)):
+                # Skip rows 2-42 (which are indices header_row+1 to header_row+41)
+                if i <= header_row + 41:
+                    continue
+                filtered_lines.append(all_lines[i])
+            
+            # Create a temporary file with the filtered content
+            temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='latin1', suffix='.csv', newline='')
+            temp_file.writelines(filtered_lines)
+            temp_file.close()
+            
+            # Load the data from the cleaned temporary file
+            df = pd.read_csv(temp_file.name, sep=';', low_memory=False)
+            os.remove(temp_file.name)  # Clean up the temporary file
             df.columns = df.columns.str.strip()
 
             # Find where the raw device data columns start
