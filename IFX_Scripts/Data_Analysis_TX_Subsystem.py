@@ -17,11 +17,11 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # --- 1. User Configuration ----------------------------------------------------------------------------------------------------------------------------------
 # <<<<<<<<<<<<<<< PLEASE CONFIGURE THESE PATHS >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/FE_Test_CS/'
-# OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/FE_Test_CS/Data_Analysis'
-DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS'
-OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS'
-OUTPUT_FOLDER_PLOTS_TX_POWER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/Plots_TX_Power'
+# DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/Test_Q_PCK/'
+# OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/Test_Q_PCK/'
+DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/RSIPPTE-393'
+OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/RSIPPTE-393/'
+OUTPUT_FOLDER_PLOTS_TX_POWER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/RSIPPTE-393/Plots_TX_Power'
 # <<<<<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 DATA_ANALYSIS_EXCEL_REPORT_NAME = 'Yield_Cpk_Correlation_report.xlsx'
@@ -307,11 +307,11 @@ else:
                 print("  - Extracting TX power data for plotting...")
                 # Determine temperature from filename
                 temp = 'Unknown'
-                if 'S1' in filename or 'B1' in filename:
+                if 'S1' in filename or 'B1' in filename or 'HT' in filename or 'Q3' in filename:
                     temp = 'Hot (135°C)'
-                elif 'S2' in filename:
+                elif 'S2' in filename or 'Q2' in filename:
                     temp = 'Cold (-40°C)'
-                elif 'S3' in filename or 'B2' in filename:
+                elif 'S3' in filename or 'B2' in filename or 'RT' in filename or 'Q1' in filename:
                     temp = 'Ambient (25°C)'
     
                 if temp != 'Unknown':
