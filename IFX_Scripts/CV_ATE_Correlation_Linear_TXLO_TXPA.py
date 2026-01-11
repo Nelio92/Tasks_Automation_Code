@@ -41,7 +41,6 @@ OUTPUT_PLOTS_DIR = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Co
 # If you want to process multiple same-layout sheets (CV+ATE columns in each sheet), list them here.
 # When non-empty, this overrides CV_SHEET/ATE_SHEET and runs each sheet independently.
 SHEETS_TO_RUN = ["FE_Filtered"]
-
 CV_SHEET = r""  # used when SHEETS_TO_RUN is empty
 ATE_SHEET = r""  # used when SHEETS_TO_RUN is empty
 
@@ -63,6 +62,9 @@ MERGE_KEYS = [
 CV_VALUE_COL = "CV_PA_Power"    # in-sheet CV values
 ATE_VALUE_COL = "ATE_PA_Power"  # in-sheet ATE values
 
+# TXLO-specific identifier (optional but recommended to keep test-cases separated)
+LO_IDAC_COL = "LO IDAC"
+
 # Optional columns (if present) for limits (ATE limits)
 ATE_LOW_COL = "Low"
 ATE_HIGH_COL = "High"
@@ -77,13 +79,21 @@ TEST_CASE_TYPE = "auto"  # "TXLO" | "TXPA" | "auto"
 TXLO_GROUP_COLS = ["Test Number", "Voltage corner", "Frequency_GHz", "Temperature"]
 TXPA_GROUP_COLS = ["LUT value", "Voltage corner", "Frequency_GHz", "Temperature"]
 
-# Regression / guard-band settings
+# Correlation / derived-limit settings
 MIN_POINTS_PER_GROUP = 5
-X_SIGMA_GUARDBAND = 3.0  # guard-band = X * σ(residuals)
+
+# New limits default behavior:
+#   correlated limits = mean(ATE_correlated) ± 6σ(ATE_correlated)
+CORRELATED_SIGMA_MULT = 6.0
 
 # Plot settings
 PLOT_DPI = 160
 
+# LO and PA power REQUIREMENTS
+LO_POWER_IDAC_112_REQ_MIN = 9  # dBm
+LO_POWER_IDAC_112_REQ_MAX = 16   # dBm
+PA_POWER_LUT_255_REQ_MIN = 13  # dBm
+PA_POWER_LUT_255_REQ_MAX = 16   # dBm
 
 # =========================
 # Helpers
@@ -221,72 +231,88 @@ def _r2_score(y_true: pd.Series, y_pred: pd.Series) -> float:
     return 1.0 - (ss_res / ss_tot)
 
 
-def _add_txpa_por_baseline_columns(merged_local: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
-    """Add POR-baseline columns for TXPA-style grouping only.
+def _maybe_extend_txlo_group_cols_with_idac(df: pd.DataFrame, group_cols: list[str]) -> list[str]:
+    if df is None or df.empty:
+        return group_cols
+    if list(group_cols) != list(TXLO_GROUP_COLS):
+        return group_cols
+    if LO_IDAC_COL not in df.columns:
+        return group_cols
+    return [*TXLO_GROUP_COLS, LO_IDAC_COL]
 
-    Implements the Excel-like logic described as "delta error considering POR",
-    but uses a robust baseline:
-        delta_considering_por = (CV - ATE) - median_por(CV - ATE)
 
-    Where the POR mean is computed per base group that excludes Voltage corner:
-        (LUT value, Frequency_GHz, Temperature)
+def _compute_new_limits(
+    *,
+    test_case_mode: str,
+    group_cols: list[str],
+    group_dict: dict,
+    g: pd.DataFrame,
+    median_delta: float,
+) -> dict:
+    """Compute new limits based on correlated distribution.
 
-    POR selection is taken from the "DoE split" column (POR/SS/FF, etc).
-    If POR rows are missing for a base group, the baseline stays NaN.
+        Returns a dict containing:
+            - Corr_Low, Corr_High (limits in correlated/CV domain)
+            - Limit_Method (string)
+            - CorrMean, CorrStd, MaxAbsResidual
     """
-    if merged_local is None or merged_local.empty:
-        return merged_local
+    corr = pd.to_numeric(g["ATE_correlated"], errors="coerce")
+    corr_mean = float(corr.mean())
+    corr_std = float(corr.std(ddof=1)) if len(corr) > 1 else math.nan
 
-    # Only for TXPA groupings (heuristic: grouped by LUT value).
-    if "LUT value" not in group_cols:
-        return merged_local
-    doe_col = "DoE split" if "DoE split" in merged_local.columns else _find_doe_split_column(list(merged_local.columns))
-    if not doe_col:
-        return merged_local
+    residual = pd.to_numeric(g["Residual"], errors="coerce")
+    max_abs_residual = float(residual.abs().max()) if len(residual) else math.nan
 
-    # Build a normalized base-key (excluding Voltage corner) so POR baselines
-    # match across corners even when source formatting differs (e.g. 2.4 vs 2.400).
-    base_key_cols: list[str] = []
+    corr_low = math.nan
+    corr_high = math.nan
+    method = "mean±6σ(correlated)"
 
-    df = merged_local.copy()
+    mode = str(test_case_mode).strip().upper()
 
-    # Compute delta once at the row level so we can baseline it.
-    df["Delta(CV-ATE)"] = df["CV"] - df["ATE"]
+    # Special case 1: MAX LO power (IDAC 112): requirements ± max|residual|
+    if mode == "TXLO":
+        idac_val = None
+        if LO_IDAC_COL in group_cols and LO_IDAC_COL in group_dict:
+            idac_val = group_dict.get(LO_IDAC_COL)
+        elif LO_IDAC_COL in g.columns:
+            idac_series = pd.to_numeric(g[LO_IDAC_COL], errors="coerce").dropna()
+            if len(idac_series.unique()) == 1:
+                idac_val = int(idac_series.iloc[0])
 
-    # Normalize base keys (TXPA expected: LUT value + frequency + temperature).
-    if "LUT value" in df.columns:
-        df["__base_lut"] = pd.to_numeric(df["LUT value"], errors="coerce").astype("Int64")
-        base_key_cols.append("__base_lut")
-    if "Frequency_GHz" in df.columns:
-        df["__base_freq"] = pd.to_numeric(df["Frequency_GHz"], errors="coerce")
-        base_key_cols.append("__base_freq")
-    if "Temperature" in df.columns:
-        df["__base_temp"] = df["Temperature"].astype(str).str.strip().str.upper()
-        base_key_cols.append("__base_temp")
+        if idac_val == 112 and not math.isnan(max_abs_residual):
+            corr_low = float(LO_POWER_IDAC_112_REQ_MIN) + max_abs_residual
+            corr_high = float(LO_POWER_IDAC_112_REQ_MAX) - max_abs_residual
+            method = "requirements±max|residual| (LO IDAC 112)"
 
-    if not base_key_cols:
-        return merged_local
+    # Special case 2: MAX PA power (LUT 255): requirements ± max|residual|
+    if mode == "TXPA":
+        lut_val = None
+        if "LUT value" in group_cols and "LUT value" in group_dict:
+            lut_val = group_dict.get("LUT value")
+        elif "LUT value" in g.columns:
+            lut_series = pd.to_numeric(g["LUT value"], errors="coerce").dropna()
+            if len(lut_series.unique()) == 1:
+                lut_val = int(lut_series.iloc[0])
 
-    doe = df[doe_col].astype(str).str.strip().str.upper()
-    # Some data sources include POR variants (e.g. "POR_NOM"); treat those as POR.
-    por_mask = doe.str.contains("POR", na=False)
+        if lut_val == 255 and not math.isnan(max_abs_residual):
+            corr_low = float(PA_POWER_LUT_255_REQ_MIN) + max_abs_residual
+            corr_high = float(PA_POWER_LUT_255_REQ_MAX) - max_abs_residual
+            method = "requirements±max|residual| (PA LUT 255)"
 
-    por_df = df.loc[por_mask, base_key_cols + ["Delta(CV-ATE)"]].dropna(subset=["Delta(CV-ATE)"])
-    if por_df.empty:
-        df["POR_MedianDelta(CV-ATE)"] = math.nan
-        df["Delta(CV-ATE)-POR"] = math.nan
-        return df
+    # Default: mean ± 6σ on correlated distribution
+    if math.isnan(corr_low) or math.isnan(corr_high):
+        if not math.isnan(corr_mean) and not math.isnan(corr_std):
+            corr_low = corr_mean - (CORRELATED_SIGMA_MULT * corr_std)
+            corr_high = corr_mean + (CORRELATED_SIGMA_MULT * corr_std)
 
-    por_base = (
-        por_df.groupby(base_key_cols, dropna=False)["Delta(CV-ATE)"]
-        .median()
-        .rename("POR_MedianDelta(CV-ATE)")
-        .reset_index()
-    )
-
-    df = df.merge(por_base, how="left", on=base_key_cols, validate="many_to_one")
-    df["Delta(CV-ATE)-POR"] = df["Delta(CV-ATE)"] - df["POR_MedianDelta(CV-ATE)"]
-    return df
+    return {
+        "CorrMean": corr_mean,
+        "CorrStd": corr_std,
+        "MaxAbsResidual": max_abs_residual,
+        "Corr_Low": corr_low,
+        "Corr_High": corr_high,
+        "Limit_Method": method,
+    }
 
 
 # =========================
@@ -326,6 +352,8 @@ if __name__ == "__main__":
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib import transforms as mtransforms
+    import matplotlib.patheffects as patheffects
 
     def run_one_same_sheet(sheet_name: str):
         df = pd.read_excel(input_xlsx, sheet_name=sheet_name)
@@ -342,6 +370,8 @@ if __name__ == "__main__":
             keep.append(test_name_col)
         if doe_split_col:
             keep.append(doe_split_col)
+        if LO_IDAC_COL in df.columns:
+            keep.append(LO_IDAC_COL)
         keep = [c for c in keep if c in df.columns]
         merged_local = df[keep].copy()
 
@@ -360,8 +390,13 @@ if __name__ == "__main__":
             rename_map[test_name_col] = "Test Name"
         if doe_split_col and doe_split_col in merged_local.columns and doe_split_col != "DoE split":
             rename_map[doe_split_col] = "DoE split"
+        if LO_IDAC_COL in merged_local.columns:
+            rename_map[LO_IDAC_COL] = LO_IDAC_COL
         merged_local = merged_local.rename(columns=rename_map)
         merged_local = _ensure_lut_value_column(merged_local)
+
+        if LO_IDAC_COL in merged_local.columns:
+            merged_local[LO_IDAC_COL] = pd.to_numeric(merged_local[LO_IDAC_COL], errors="coerce").astype("Int64")
         return merged_local
 
     def run_one_two_sheets():
@@ -395,6 +430,12 @@ if __name__ == "__main__":
             ate_keep.append(test_name_ate)
         if doe_split_ate:
             ate_keep.append(doe_split_ate)
+
+        # TXLO IDAC column (keep if present)
+        if LO_IDAC_COL in cv_df.columns:
+            cv_keep.append(LO_IDAC_COL)
+        if LO_IDAC_COL in ate_df.columns:
+            ate_keep.append(LO_IDAC_COL)
 
         cv_df = cv_df[cv_keep].copy()
         ate_df = ate_df[ate_keep].copy()
@@ -459,6 +500,16 @@ if __name__ == "__main__":
 
         merged_local = _ensure_lut_value_column(merged_local)
 
+        # Normalize/choose a single LO IDAC column if present
+        if LO_IDAC_COL not in merged_local.columns:
+            if f"{LO_IDAC_COL}_CV" in merged_local.columns:
+                merged_local = merged_local.rename(columns={f"{LO_IDAC_COL}_CV": LO_IDAC_COL})
+            elif f"{LO_IDAC_COL}_ATE" in merged_local.columns:
+                merged_local = merged_local.rename(columns={f"{LO_IDAC_COL}_ATE": LO_IDAC_COL})
+
+        if LO_IDAC_COL in merged_local.columns:
+            merged_local[LO_IDAC_COL] = pd.to_numeric(merged_local[LO_IDAC_COL], errors="coerce").astype("Int64")
+
         if "CV" not in merged_local.columns or "ATE" not in merged_local.columns:
             raise SystemExit(
                 "After merge, CV/ATE columns not found. "
@@ -474,13 +525,11 @@ if __name__ == "__main__":
         if "LUT value" in group_cols:
             merged_local = _ensure_lut_value_column(merged_local)
 
+        group_cols = _maybe_extend_txlo_group_cols_with_idac(merged_local, group_cols)
+
         missing_group_cols = [c for c in group_cols if c not in merged_local.columns]
         if missing_group_cols:
             raise SystemExit(f"Missing GROUP_COLS in merged data: {missing_group_cols}")
-
-        # TXPA only: compute a POR baseline (per LUT/freq/temp) and add a
-        # per-row delta relative to that baseline.
-        merged_local = _add_txpa_por_baseline_columns(merged_local, group_cols)
 
         local_plots_dir = plots_dir / _safe_slug(sheet_label)
         local_plots_dir.mkdir(parents=True, exist_ok=True)
@@ -510,24 +559,12 @@ if __name__ == "__main__":
             median_delta = float(g["Delta(CV-ATE)"].median())
             max_delta = float(g["Delta(CV-ATE)"].max())
 
-            # TXPA only: include POR-baseline delta stats if available.
-            por_median_delta = math.nan
-            median_delta_minus_por = math.nan
-            if "LUT value" in group_cols and "POR_MedianDelta(CV-ATE)" in g.columns:
-                # Constant within the group (same LUT/freq/temp), but safe to read from series.
-                por_vals = pd.to_numeric(g["POR_MedianDelta(CV-ATE)"], errors="coerce").dropna()
-                por_median_delta = float(por_vals.iloc[0]) if not por_vals.empty else math.nan
-                if "Delta(CV-ATE)-POR" in g.columns:
-                    mdp = pd.to_numeric(g["Delta(CV-ATE)-POR"], errors="coerce").dropna()
-                    median_delta_minus_por = float(mdp.median()) if not mdp.empty else math.nan
-
             # Apply correction to ATE so it aligns to CV
             g["ATE_correlated"] = g["ATE"] + median_delta
 
             # Residuals in delta-domain
             g["Residual"] = g["Delta(CV-ATE)"] - median_delta
             residual_std = float(g["Residual"].std(ddof=1)) if len(g) > 1 else math.nan
-            guardband_ate = X_SIGMA_GUARDBAND * residual_std if not math.isnan(residual_std) else math.nan
 
             # R² for the offset-only model in ATE-domain: ATE_pred = CV - median_delta
             r2 = _r2_score(g["ATE"], g["CV"] - median_delta)
@@ -549,15 +586,52 @@ if __name__ == "__main__":
                 unit_vals = [v for v in unit_vals.tolist() if v]
                 unit = unit_vals[0] if unit_vals else ""
 
-            # New limits (requested): shrink using guardband
-            new_ate_low = math.nan
-            new_ate_high = math.nan
-            if (ate_low is not None) and (ate_high is not None) and (not math.isnan(guardband_ate)):
-                new_ate_low = ate_low + guardband_ate
-                new_ate_high = ate_high - guardband_ate
+            # New limits (requested):
+            # - default: mean(ATE_correlated) ± 6σ(ATE_correlated)
+            # - special cases:
+            #     TXLO max LO power (IDAC 112): requirements ± max|residual|
+            #     TXPA max PA power (LUT 255): requirements ± max|residual|
+            inferred_mode = "TXPA" if "LUT value" in group_cols else "TXLO"
+            group_dict = dict(zip(group_cols, group_key if isinstance(group_key, tuple) else (group_key,)))
+            limits = _compute_new_limits(
+                test_case_mode=inferred_mode,
+                group_cols=group_cols,
+                group_dict=group_dict,
+                g=g,
+                median_delta=median_delta,
+            )
+            corr_low = limits["Corr_Low"]
+            corr_high = limits["Corr_High"]
+
+            # Special-cases: additional requirement-based limits using 3*sigma(residuals)
+            ltl_new_3s = math.nan
+            utl_new_3s = math.nan
+            if not math.isnan(residual_std):
+                if inferred_mode == "TXLO":
+                    idac_val = group_dict.get(LO_IDAC_COL) if LO_IDAC_COL in group_dict else None
+                    if idac_val == 112:
+                        ltl_new_3s = float(LO_POWER_IDAC_112_REQ_MIN) + (3.0 * residual_std)
+                        utl_new_3s = float(LO_POWER_IDAC_112_REQ_MAX) - (3.0 * residual_std)
+                else:
+                    lut_val = group_dict.get("LUT value") if "LUT value" in group_dict else None
+                    if lut_val == 255:
+                        ltl_new_3s = float(PA_POWER_LUT_255_REQ_MIN) + (3.0 * residual_std)
+                        utl_new_3s = float(PA_POWER_LUT_255_REQ_MAX) - (3.0 * residual_std)
+
+            corr_window_invalid = (
+                (not math.isnan(corr_low))
+                and (not math.isnan(corr_high))
+                and (corr_low > corr_high)
+            )
+            corr_window_width = (corr_high - corr_low) if (not math.isnan(corr_low) and not math.isnan(corr_high)) else math.nan
+            if corr_window_invalid:
+                print(
+                    "WARNING: Correlated limit window is inverted "
+                    f"(Corr_Low={corr_low:.6g} > Corr_High={corr_high:.6g}) "
+                    f"for {sheet_label} | {title if 'title' in locals() else group_dict}"
+                )
 
             # Save factors row
-            group_dict = dict(zip(group_cols, group_key if isinstance(group_key, tuple) else (group_key,)))
             all_factors_rows.append(
                 {
                     "DataSheet": sheet_label,
@@ -566,17 +640,21 @@ if __name__ == "__main__":
                     "N": n_points,
                     "MedianDelta(CV-ATE)": median_delta,
                     "MaxDelta(CV-ATE)": max_delta,
-                    # TXPA only (NaN for TXLO): POR-baseline columns
-                    "POR_MedianDelta(CV-ATE)": por_median_delta,
-                    "MedianDelta(CV-ATE)-POR": median_delta_minus_por,
                     "R2_OffsetModel": r2,
                     "ResidualStd(Delta)": residual_std,
-                    "Guardband(Delta)": guardband_ate,
+                    "MaxAbsResidual(Delta)": limits["MaxAbsResidual"],
+                    "CorrMean": limits["CorrMean"],
+                    "CorrStd": limits["CorrStd"],
+                    "Corr_Low": corr_low,
+                    "Corr_High": corr_high,
+                    "LTL_New_3s": ltl_new_3s,
+                    "UTL_New_3s": utl_new_3s,
+                    "Corr_Window_Width": corr_window_width,
+                    "Corr_Window_Invalid": corr_window_invalid,
+                    "Limit_Method": limits["Limit_Method"],
                     "ATE_Low": ate_low,
                     "ATE_High": ate_high,
                     "Unit": unit,
-                    "New_ATE_Low": new_ate_low,
-                    "New_ATE_High": new_ate_high,
                 }
             )
 
@@ -589,22 +667,36 @@ if __name__ == "__main__":
                         # Extra context (helps sign-off and debugging). Present for TXPA.
                         "LUT value": (int(r["LUT value"]) if "LUT value" in g.columns and pd.notna(r.get("LUT value")) else pd.NA),
                         "DoE split": (str(r.get("DoE split", "")).strip() if "DoE split" in g.columns else ""),
+                        LO_IDAC_COL: (int(pd.to_numeric(r.get(LO_IDAC_COL), errors="coerce")) if LO_IDAC_COL in g.columns and pd.notna(r.get(LO_IDAC_COL)) else pd.NA),
                         "Test Name": (str(r.get("Test Name", "")).strip() if "Test Name" in g.columns else ""),
                         "CV": float(r["CV"]),
                         "ATE": float(r["ATE"]),
                         "ATE_correlated": float(r["ATE_correlated"]),
                         "Delta(CV-ATE)": float(r["Delta(CV-ATE)"]),
-                        # TXPA only (NaN for TXLO): per-row POR-baseline deltas
-                        "POR_MedianDelta(CV-ATE)": (float(r["POR_MedianDelta(CV-ATE)"]) if "POR_MedianDelta(CV-ATE)" in g.columns and pd.notna(r["POR_MedianDelta(CV-ATE)"]) else math.nan),
-                        "Delta(CV-ATE)-POR": (float(r["Delta(CV-ATE)-POR"]) if "Delta(CV-ATE)-POR" in g.columns and pd.notna(r["Delta(CV-ATE)-POR"]) else math.nan),
                         "Residual": float(r["Residual"]),
                     }
                 )
 
-            # Plot (2 subplots):
-            # 1) per-sample series (CV vs index, ATE vs index)
-            # 2) regression view (ATE vs CV) with Theil–Sen line (TS info only)
-            if "DUT Nr" in g.columns:
+            # Plot (3 subplots):
+            # 1) per-sample series (CV vs index, ATE vs index) with DoE split structure
+            # 2) regression view (ATE vs CV) with offset-only line
+            # 3) correlated-domain series (CV vs index, ATE_correlated vs index) + correlated limits
+            if "DoE split" in g.columns:
+                g_sort = g.copy()
+                g_sort["__doe_sort"] = (
+                    g_sort["DoE split"]
+                    .astype(str)
+                    .replace({"nan": "", "None": ""})
+                    .str.strip()
+                    .where(lambda s: s != "", other="(blank)")
+                    .str.upper()
+                )
+                sort_cols = ["__doe_sort"]
+                if "DUT Nr" in g_sort.columns:
+                    sort_cols.append("DUT Nr")
+                g_plot = g_sort.sort_values(by=sort_cols).drop(columns=["__doe_sort"]).reset_index(drop=True)
+                x_label = "Samples (sorted by DoE split)"
+            elif "DUT Nr" in g.columns:
                 g_plot = g.sort_values(by=["DUT Nr"]).reset_index(drop=True)
                 x_label = "Samples (sorted by DUT Nr)"
             else:
@@ -613,11 +705,27 @@ if __name__ == "__main__":
 
             x_idx = pd.Series(range(len(g_plot)))
 
-            fig, (ax1, ax2) = plt.subplots(
-                nrows=2,
+            doe = None
+            boundaries: list[int] = []
+            starts: list[int] = []
+            ends: list[int] = []
+            if "DoE split" in g_plot.columns:
+                doe = (
+                    g_plot["DoE split"]
+                    .astype(str)
+                    .replace({"nan": "", "None": ""})
+                    .str.strip()
+                )
+                doe = doe.where(doe != "", other="(blank)").str.upper()
+                boundaries = [i for i in range(1, len(doe)) if doe.iloc[i] != doe.iloc[i - 1]]
+                starts = [0] + boundaries
+                ends = boundaries + [len(doe)]
+
+            fig, (ax1, ax2, ax3) = plt.subplots(
+                nrows=3,
                 ncols=1,
-                figsize=(12.0, 9.0),
-                gridspec_kw={"height_ratios": [2.0, 2.0]},
+                figsize=(12.0, 12.0),
+                gridspec_kw={"height_ratios": [2.0, 2.0, 2.0]},
             )
 
             ax1.plot(
@@ -639,14 +747,32 @@ if __name__ == "__main__":
                 label="ATE (individual)",
             )
 
-            # Original + new ATE limits (ATE domain)
-            if ate_low is not None:
-                ax1.axhline(ate_low, color="black", linestyle=":", linewidth=2.0, label="ATE Low")
-            if ate_high is not None:
-                ax1.axhline(ate_high, color="black", linestyle=":", linewidth=2.0, label="ATE High")
-            if not math.isnan(new_ate_low) and not math.isnan(new_ate_high):
-                ax1.axhline(new_ate_low, color="purple", linestyle="-.", linewidth=2.2, label="New ATE Low")
-                ax1.axhline(new_ate_high, color="purple", linestyle="-.", linewidth=2.2, label="New ATE High")
+            # Visual guide: mark DoE split boundaries + label each DoE segment
+            if doe is not None:
+                for cut in boundaries:
+                    ax1.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
+
+                # Centered labels (x in data coords, y in axes coords)
+                blend1 = mtransforms.blended_transform_factory(ax1.transData, ax1.transAxes)
+                for s, e in zip(starts, ends):
+                    if e <= s:
+                        continue
+                    label = str(doe.iloc[s])
+                    x_center = (s + (e - 1)) / 2.0
+                    ax1.text(
+                        x_center,
+                        0.96,
+                        label,
+                        transform=blend1,
+                        ha="center",
+                        va="top",
+                        fontsize=11,
+                        color="black",
+                        zorder=5,
+                        path_effects=[patheffects.withStroke(linewidth=3.0, foreground="white", alpha=0.9)],
+                    )
+
+            # ATE limits removed (only correlated limits are relevant)
 
             title_parts = [f"{k}={v}" for k, v in group_dict.items()]
             if test_name:
@@ -660,7 +786,7 @@ if __name__ == "__main__":
             ax1.tick_params(axis="both", labelsize=11)
             ax1.grid(True, alpha=0.25)
 
-            # Tight x/y scaling to data + limits
+            # Tight x/y scaling to data only
             ax1.set_xlim(-0.5, len(g_plot) - 0.5)
             y_candidates = [
                 float(g_plot["CV"].min()),
@@ -668,14 +794,6 @@ if __name__ == "__main__":
                 float(g_plot["ATE"].min()),
                 float(g_plot["ATE"].max()),
             ]
-            if ate_low is not None:
-                y_candidates.append(float(ate_low))
-            if ate_high is not None:
-                y_candidates.append(float(ate_high))
-            if not math.isnan(new_ate_low):
-                y_candidates.append(float(new_ate_low))
-            if not math.isnan(new_ate_high):
-                y_candidates.append(float(new_ate_high))
 
             y_min = min(y_candidates)
             y_max = max(y_candidates)
@@ -686,7 +804,7 @@ if __name__ == "__main__":
             # Keep the top subplot free of regression text (as requested).
             note_top = f"N={n_points}  median(CV-ATE)={median_delta:.4g}  max(CV-ATE)={max_delta:.4g}"
             if not math.isnan(residual_std):
-                note_top += f"  σ(delta-res)={residual_std:.4g}  GB={guardband_ate:.4g}"
+                note_top += f"  σ(residual)={residual_std:.4g}"
             ax1.text(
                 0.015,
                 0.02,
@@ -760,6 +878,155 @@ if __name__ == "__main__":
             )
             ax2.legend(fontsize=10, framealpha=0.92)
 
+            # Correlated-domain subplot (standard series like subplot 1)
+            ax3.plot(
+                x_idx,
+                g_plot["CV"],
+                marker="o",
+                linestyle="-",
+                linewidth=2.2,
+                markersize=6,
+                label="CV (individual)",
+            )
+            ax3.plot(
+                x_idx,
+                g_plot["ATE_correlated"],
+                marker="^",
+                linestyle="--",
+                linewidth=2.2,
+                markersize=6,
+                label="ATE_correlated (individual)",
+            )
+
+            # DoE split boundaries + labels (same as subplot 1)
+            if doe is not None:
+                for cut in boundaries:
+                    ax3.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
+
+                blend3 = mtransforms.blended_transform_factory(ax3.transData, ax3.transAxes)
+                for s, e in zip(starts, ends):
+                    if e <= s:
+                        continue
+                    label = str(doe.iloc[s])
+                    x_center = (s + (e - 1)) / 2.0
+                    ax3.text(
+                        x_center,
+                        0.96,
+                        label,
+                        transform=blend3,
+                        ha="center",
+                        va="top",
+                        fontsize=11,
+                        color="black",
+                        zorder=5,
+                        path_effects=[patheffects.withStroke(linewidth=3.0, foreground="white", alpha=0.9)],
+                    )
+
+            if not math.isnan(corr_low):
+                ax3.axhline(
+                    corr_low,
+                    color="cyan",
+                    linestyle="-.",
+                    linewidth=2.2,
+                    label=f"Corr Low = {corr_low:.4g} dBm",
+                )
+            if not math.isnan(corr_high):
+                ax3.axhline(
+                    corr_high,
+                    color="cyan",
+                    linestyle="-.",
+                    linewidth=2.2,
+                    label=f"Corr High = {corr_high:.4g} dBm",
+                )
+
+            # Requirements lines (only for the relevant MAX power special-cases)
+            req_min = math.nan
+            req_max = math.nan
+            if inferred_mode == "TXLO":
+                idac_val = group_dict.get(LO_IDAC_COL) if LO_IDAC_COL in group_dict else None
+                if idac_val == 112:
+                    req_min = float(LO_POWER_IDAC_112_REQ_MIN)
+                    req_max = float(LO_POWER_IDAC_112_REQ_MAX)
+            else:
+                lut_val = group_dict.get("LUT value") if "LUT value" in group_dict else None
+                if lut_val == 255:
+                    req_min = float(PA_POWER_LUT_255_REQ_MIN)
+                    req_max = float(PA_POWER_LUT_255_REQ_MAX)
+
+            if not math.isnan(req_min):
+                ax3.axhline(req_min, color="red", linestyle="-", linewidth=2.0, label=f"REQ Min = {req_min:.4g} dBm")
+            if not math.isnan(req_max):
+                ax3.axhline(req_max, color="red", linestyle="-", linewidth=2.0, label=f"REQ Max = {req_max:.4g} dBm")
+
+            # Additional special-case limits: REQ ± 3*sigma(residuals)
+            ltl_new_3s_plot = math.nan
+            utl_new_3s_plot = math.nan
+            if (not math.isnan(req_min)) and (not math.isnan(req_max)) and (not math.isnan(residual_std)):
+                ltl_new_3s_plot = float(req_min) + (3.0 * residual_std)
+                utl_new_3s_plot = float(req_max) - (3.0 * residual_std)
+                ax3.axhline(
+                    ltl_new_3s_plot,
+                    color="orange",
+                    linestyle="--",
+                    linewidth=2.0,
+                    label=f"LTL_New_3s = {ltl_new_3s_plot:.4g} dBm",
+                )
+                ax3.axhline(
+                    utl_new_3s_plot,
+                    color="orange",
+                    linestyle="--",
+                    linewidth=2.0,
+                    label=f"UTL_New_3s = {utl_new_3s_plot:.4g} dBm",
+                )
+
+            # Tight y scaling for correlated-domain subplot (data + limits + req)
+            y3_candidates = [
+                float(pd.to_numeric(g_plot["CV"], errors="coerce").min()),
+                float(pd.to_numeric(g_plot["CV"], errors="coerce").max()),
+                float(pd.to_numeric(g_plot["ATE_correlated"], errors="coerce").min()),
+                float(pd.to_numeric(g_plot["ATE_correlated"], errors="coerce").max()),
+            ]
+            if not math.isnan(corr_low):
+                y3_candidates.append(float(corr_low))
+            if not math.isnan(corr_high):
+                y3_candidates.append(float(corr_high))
+            if not math.isnan(req_min):
+                y3_candidates.append(float(req_min))
+            if not math.isnan(req_max):
+                y3_candidates.append(float(req_max))
+            if not math.isnan(ltl_new_3s_plot):
+                y3_candidates.append(float(ltl_new_3s_plot))
+            if not math.isnan(utl_new_3s_plot):
+                y3_candidates.append(float(utl_new_3s_plot))
+
+            y3_min = min(y3_candidates)
+            y3_max = max(y3_candidates)
+            y3_span = y3_max - y3_min
+            y3_pad = (0.06 * y3_span) if y3_span > 0 else (abs(y3_min) * 0.06 + 1.0)
+            ax3.set_ylim(y3_min - y3_pad, y3_max + y3_pad)
+
+            ax3.set_xlabel(x_label, fontsize=12)
+            ax3.set_ylabel(f"Value{(' ['+unit+']') if unit else ''}", fontsize=12)
+            ax3.tick_params(axis="both", labelsize=11)
+            ax3.grid(True, alpha=0.25)
+            ax3.legend(fontsize=10, framealpha=0.92)
+
+            note_dist = f"Method={limits['Limit_Method']}  μ_corr={limits['CorrMean']:.4g}  σ_corr={limits['CorrStd']:.4g}"
+            if not math.isnan(limits["MaxAbsResidual"]):
+                note_dist += f"  max|res|={limits['MaxAbsResidual']:.4g}"
+            if corr_window_invalid:
+                note_dist += "  [INVALID LIMIT WINDOW]"
+            ax3.text(
+                0.015,
+                0.02,
+                note_dist,
+                transform=ax3.transAxes,
+                fontsize=11,
+                va="bottom",
+                ha="left",
+                bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 3.0},
+            )
+
             fig.tight_layout(rect=[0, 0, 1, 0.96])
 
             fname = _safe_slug(title) + ".png"
@@ -783,84 +1050,7 @@ if __name__ == "__main__":
     factors_df = pd.DataFrame(all_factors_rows)
     correlated_df = pd.DataFrame(all_data_rows)
 
-    # Sign-off summary (TXPA): a compact table per (LUT, freq, temp) showing
-    # - POR baseline median
-    # - per-split median of (Delta - POR)
-    # - per-split N
-    # - overall spread metrics of (Delta - POR)
-    signoff_summary_df = pd.DataFrame()
-    required = {
-        "LUT value",
-        "Frequency_GHz",
-        "Temperature",
-        "DoE split",
-        "Delta(CV-ATE)-POR",
-        "POR_MedianDelta(CV-ATE)",
-    }
-    if required.issubset(set(correlated_df.columns)):
-        base_cols = ["LUT value", "Frequency_GHz", "Temperature"]
-
-        tmp = correlated_df.copy()
-        tmp["LUT value"] = pd.to_numeric(tmp["LUT value"], errors="coerce").astype("Int64")
-        tmp["Frequency_GHz"] = pd.to_numeric(tmp["Frequency_GHz"], errors="coerce")
-        tmp["Temperature"] = tmp["Temperature"].astype(str).str.strip().str.upper()
-        tmp["DoE split"] = tmp["DoE split"].astype(str).str.strip().str.upper()
-        tmp["Delta(CV-ATE)-POR"] = pd.to_numeric(tmp["Delta(CV-ATE)-POR"], errors="coerce")
-        tmp["POR_MedianDelta(CV-ATE)"] = pd.to_numeric(tmp["POR_MedianDelta(CV-ATE)"], errors="coerce")
-
-        # Per-split medians and counts of POR-normalized delta
-        by_split = (
-            tmp.dropna(subset=["Delta(CV-ATE)-POR"])  # keep numeric only
-            .groupby(base_cols + ["DoE split"], dropna=False)["Delta(CV-ATE)-POR"]
-            .agg(N="count", Median="median")
-            .reset_index()
-        )
-
-        median_wide = by_split.pivot(index=base_cols, columns="DoE split", values="Median")
-        n_wide = by_split.pivot(index=base_cols, columns="DoE split", values="N")
-
-        median_wide = median_wide.add_prefix("MedianDeltaMinusPOR_").reset_index()
-        n_wide = n_wide.add_prefix("N_").reset_index()
-
-        # POR baseline per base condition (should be constant); take median for safety
-        por_baseline = (
-            tmp.dropna(subset=["POR_MedianDelta(CV-ATE)"])
-            .groupby(base_cols, dropna=False)["POR_MedianDelta(CV-ATE)"]
-            .median()
-            .rename("POR_MedianDelta(CV-ATE)")
-            .reset_index()
-        )
-
-        # Overall spread of normalized delta (all splits mixed)
-        def _q(p: float):
-            return lambda s: float(s.quantile(p)) if len(s) else math.nan
-
-        spread = (
-            tmp.dropna(subset=["Delta(CV-ATE)-POR"])
-            .groupby(base_cols, dropna=False)["Delta(CV-ATE)-POR"]
-            .agg(
-                N_All="count",
-                Std_All="std",
-                P05_All=_q(0.05),
-                P95_All=_q(0.95),
-                MaxAbs_All=lambda s: float(s.abs().max()) if len(s) else math.nan,
-            )
-            .reset_index()
-        )
-
-        signoff_summary_df = por_baseline.merge(median_wide, on=base_cols, how="left").merge(
-            n_wide, on=base_cols, how="left"
-        ).merge(spread, on=base_cols, how="left")
-
-        # Convenience KPI: maximum absolute split-median deviation (excluding POR).
-        median_cols = [c for c in signoff_summary_df.columns if c.startswith("MedianDeltaMinusPOR_")]
-        nonpor_median_cols = [c for c in median_cols if c.upper() != "MEDIANDELTAMINUSPOR_POR"]
-        if nonpor_median_cols:
-            signoff_summary_df["MaxAbsMedian_NonPOR"] = (
-                signoff_summary_df[nonpor_median_cols].abs().max(axis=1, skipna=True)
-            )
-        else:
-            signoff_summary_df["MaxAbsMedian_NonPOR"] = math.nan
+    # POR baseline correction/signoff summary removed (not needed).
 
     # Put Test Name directly after the primary identifier (Test Number for TXLO, LUT value for TXPA)
     if "Test Number" in factors_df.columns:
@@ -878,16 +1068,12 @@ if __name__ == "__main__":
         with pd.ExcelWriter(output_xlsx, engine="openpyxl") as writer:
             factors_df.to_excel(writer, index=False, sheet_name="Correlation_Factors")
             correlated_df.to_excel(writer, index=False, sheet_name="Correlated_Data")
-            if not signoff_summary_df.empty:
-                signoff_summary_df.to_excel(writer, index=False, sheet_name="Signoff_Summary")
     except PermissionError:
         # Most common cause: the workbook is open in Excel.
         alt_path = output_xlsx.with_name(output_xlsx.stem + "_new.xlsx")
         with pd.ExcelWriter(alt_path, engine="openpyxl") as writer:
             factors_df.to_excel(writer, index=False, sheet_name="Correlation_Factors")
             correlated_df.to_excel(writer, index=False, sheet_name="Correlated_Data")
-            if not signoff_summary_df.empty:
-                signoff_summary_df.to_excel(writer, index=False, sheet_name="Signoff_Summary")
         output_xlsx = alt_path
 
     print(f"Wrote factors: {len(factors_df)} groups")

@@ -4,17 +4,21 @@ CV ↔ ATE delta-based correlation (flat script, no classes).
 Input workbook contains both CV and ATE data in the SAME sheet but different columns.
 
 For each data group (each test number = test case):
-  group by Voltage corner → Frequency → Temperature
+	group by Voltage corner → Frequency → Temperature
 and within each group:
-  - compute per-row delta = CV - ATE
-  - compute avg_delta = mean(delta)
-  - compute new ATE high limit:
+	- compute per-row delta = CV - ATE
+	- compute avg_delta = mean(delta)
+	- compute new ATE high limit:
 		ATE_High_New = ATE_High_Old - avg_delta
+	- compute worst-case guard-band per test case:
+		WC_GuardBand = max(|delta_i - avg_delta|)
+	- compute worst-case ATE high limit:
+		ATE_High_WC = ATE_High_New - WC_GuardBand
 
 Outputs:
-  - Excel summary (one row per group)
-  - Plots per group showing:
-	  CV raw data, ATE raw data (different style), ATE old/new limit lines
+	- Excel summary (one row per group)
+	- Plots per group showing:
+	  CV raw data, ATE raw data (different style), ATE old/new/WC limit lines
 
 This script is designed to be configured in-code (no CLI required).
 """
@@ -31,13 +35,13 @@ import pandas as pd
 # USER CONFIG (in-code)
 # =========================
 
-INPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Correlation/ATE_Extracted_DPLL_PN_Data.xlsx"
+INPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_DPLL_PN_Data.xlsx"
 
 # Output file (or folder) for the generated summary
 OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Correlation/CV_ATE_Delta_Summary_DPLL_PN.xlsx"
 
 # Optional; if empty uses OUTPUT_XLSX folder + "plots_delta"
-OUTPUT_PLOTS_DIR = r""
+OUTPUT_PLOTS_DIR = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Correlation/plots_delta"
 
 # Sheets to process (same-layout sheets containing both CV and ATE columns)
 SHEETS_TO_RUN = ["FE_PN", "BE_PN"]
@@ -210,6 +214,7 @@ if __name__ == "__main__":
 
 			avg_delta = float(g["Delta(CV-ATE)"].mean())
 			std_delta = float(g["Delta(CV-ATE)"].std(ddof=1)) if n > 1 else math.nan
+			wc_guardband = float((g["Delta(CV-ATE)"] - avg_delta).abs().max()) if n > 0 else math.nan
 
 			# Limits
 			ate_low = float(g[ATE_LOW_COL].dropna().iloc[0]) if (ATE_LOW_COL in g.columns and g[ATE_LOW_COL].notna().any()) else math.nan
@@ -224,6 +229,10 @@ if __name__ == "__main__":
 			if not math.isnan(ate_high):
 				ate_high_new = ate_high - avg_delta
 
+			ate_high_wc = math.nan
+			if not math.isnan(ate_high_new) and not math.isnan(wc_guardband):
+				ate_high_wc = ate_high_new - wc_guardband
+
 			group_dict = dict(zip(GROUP_COLS, group_key if isinstance(group_key, tuple) else (group_key,)))
 
 			summary_rows.append(
@@ -234,9 +243,11 @@ if __name__ == "__main__":
 					"N": n,
 					"AvgDelta(CV-ATE)": avg_delta,
 					"StdDelta(CV-ATE)": std_delta,
+					"WC_GuardBand": wc_guardband,
 					"ATE_Low": ate_low,
 					"ATE_High": ate_high,
 					"ATE_High_New": ate_high_new,
+					"ATE_High_WC": ate_high_wc,
 					"Unit": unit,
 				}
 			)
@@ -278,7 +289,9 @@ if __name__ == "__main__":
 			if not math.isnan(ate_high):
 				ax.axhline(ate_high, color="black", linestyle=":", linewidth=2.0, label="ATE High")
 			if not math.isnan(ate_high_new):
-				ax.axhline(ate_high_new, color="purple", linestyle="-.", linewidth=2.4, label="ATE High New")
+				ax.axhline(ate_high_new, color="cyan", linestyle="-.", linewidth=2.4, label="ATE High New (AVG)")
+			if not math.isnan(ate_high_wc):
+				ax.axhline(ate_high_wc, color="red", linestyle="--", linewidth=2.4, label="ATE High WC")
 
 			title_parts = [f"{k}={v}" for k, v in group_dict.items()]
 			if test_name:
@@ -293,6 +306,8 @@ if __name__ == "__main__":
 			ax.legend(fontsize=11, framealpha=0.92)
 
 			note = f"N={n}  avg(CV-ATE)={avg_delta:.4g}" + (f"  std={std_delta:.4g}" if not math.isnan(std_delta) else "")
+			if not math.isnan(wc_guardband):
+				note += f"  WC_GB={wc_guardband:.4g}"
 			ax.text(
 				0.015,
 				0.02,
