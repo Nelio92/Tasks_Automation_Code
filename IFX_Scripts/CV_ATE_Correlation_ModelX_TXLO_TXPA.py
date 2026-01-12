@@ -4,18 +4,21 @@ CV ↔ ATE correlation (flat script, no classes).
 Reads a single raw data Excel file that contains CV and ATE data (typically in
 separate sheets), merges rows by device/test keys, then groups by:
     Test Number, supply corner, frequency, and temperature
-and performs per-group correlation using a robust offset-only model:
-    - correlation factor = median(CV - ATE)
 
-For each group (test case), the script:
-    - Computes delta = (CV - ATE)
-    - Uses median(delta) as the correction factor
-    - Produces corrected ATE: ATE_correlated = ATE + median(delta)
-    - Computes residuals as: residual = delta - median(delta)
-    - Computes σ(residual) and a guard-band (X * σ)
-    - Computes an R² value for the offset-only model (ATE_pred = CV - median(delta))
-    - Outputs correlation factors + derived limits to an Excel file
-    - Outputs row-level corrected values + residuals to a second Excel sheet
+Per group (test case), correlation models are computed:
+    1) Offset-only model (robust):      CV_pred = ATE + median(CV - ATE)
+    2) Physics-based Kf model:          CV_pred = ATE - (alpha * Kf + beta)
+       with alpha/beta fitted from:    (ATE - CV) = alpha * Kf + beta
+
+The Kf values are read from a dedicated sheet (default: "KF_FE") and merged by
+device/temperature keys.
+
+Outputs:
+    - Group-level coefficients + goodness-of-fit metrics (Excel)
+    - Row-level predicted values + residuals per model (Excel)
+    - Plots per group (two figures), each with 2 subplots:
+        A) raw series + correlated series
+        B) regression view + residuals per model
 
 This script is designed to be configured in-code (no CLI required).
 """
@@ -34,9 +37,13 @@ import pandas as pd
 # USER CONFIG (in-code)
 # =========================
 
-INPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_PA_Power_Data.xlsx"  # e.g. r"C:\path\to\raw_cv_ate.xlsx"
-OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Correlation/Correlation_PA_Power.xlsx"  # e.g. r"C:\path\to\correlation_results.xlsx" OR a folder path
-OUTPUT_PLOTS_DIR = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Correlation/plots_PA_Power"  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+#INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_PA_Power_Data_DoE.xlsx")
+#OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_DoE.xlsx")  # can also be a folder path
+#OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_LO_Power_Data.xlsx")
+OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXLO_Power_DoE.xlsx")  # can also be a folder path
+OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_LO_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
 
 # If you want to process multiple same-layout sheets (CV+ATE columns in each sheet), list them here.
 # When non-empty, this overrides CV_SHEET/ATE_SHEET and runs each sheet independently.
@@ -59,8 +66,17 @@ MERGE_KEYS = [
 
 # Required columns containing numeric results
 # For the provided PN correlation workbook these are in the same sheet.
-CV_VALUE_COL = "CV_PA_Power"    # in-sheet CV values
-ATE_VALUE_COL = "ATE_PA_Power"  # in-sheet ATE values
+CV_VALUE_COL = "CV_LO_Power"    # in-sheet CV values
+ATE_VALUE_COL = "ATE_LO_Power"  # in-sheet ATE values
+
+# Physics-based model input (Kf)
+KF_SHEET = "KF_FE"  # new input parameter
+KF_VALUE_COL = "Test Value"
+# Use the individual Kf values as measured in the KF sheet.
+# Even if Kf is expected to be supply/frequency independent, the source sheet
+# provides Kf per DUT+temperature and is tagged by corner/frequency; we therefore
+# merge only by DUT Nr + Temperature and broadcast to all corners/frequencies.
+KF_MERGE_KEYS = ["DUT Nr", "Temperature"]
 
 # TXLO-specific identifier (optional but recommended to keep test-cases separated)
 LO_IDAC_COL = "LO IDAC"
@@ -74,7 +90,7 @@ ATE_UNIT_COL = "Unit"
 # - TXLO power: grouped by Test Number → Voltage corner → Frequency → Temperature
 # - TXPA power: grouped by LUT value → Voltage corner → Frequency → Temperature
 # Set to "auto" to pick TXPA grouping when a usable LUT value is present.
-TEST_CASE_TYPE = "auto"  # "TXLO" | "TXPA" | "auto"
+TEST_CASE_TYPE = "TXLO"  # "TXLO" | "TXPA" | "auto"
 
 TXLO_GROUP_COLS = ["Test Number", "Voltage corner", "Frequency_GHz", "Temperature"]
 TXPA_GROUP_COLS = ["LUT value", "Voltage corner", "Frequency_GHz", "Temperature"]
@@ -121,6 +137,49 @@ def _safe_slug(text: str) -> str:
     return t.strip("_")[:180] or "plot"
 
 
+def _norm_col_name(name: str) -> str:
+    # Normalization used to match Excel headers that sometimes contain
+    # whitespace/newlines or inconsistent underscores.
+    return re.sub(r"[\s_\-]+", "", str(name)).lower().strip()
+
+
+def _remap_columns_best_effort(df: pd.DataFrame, desired_cols: list[str]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    norm_to_actual: dict[str, str] = {}
+    collisions: set[str] = set()
+    for c in list(df.columns):
+        n = _norm_col_name(c)
+        if n in norm_to_actual and norm_to_actual[n] != c:
+            collisions.add(n)
+            continue
+        norm_to_actual[n] = c
+
+    if collisions:
+        # Don't rename ambiguous normalized columns.
+        print(
+            "WARNING: Column-name normalization collision(s) detected for: "
+            + ", ".join(sorted(collisions))
+            + ". Auto-remap will ignore ambiguous matches."
+        )
+
+    rename_map: dict[str, str] = {}
+    for wanted in desired_cols:
+        if wanted in df.columns:
+            continue
+        n = _norm_col_name(wanted)
+        if n in collisions:
+            continue
+        actual = norm_to_actual.get(n)
+        if actual and actual != wanted:
+            rename_map[actual] = wanted
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return df
+
+
 def _find_test_name_column(columns: list[str]) -> str | None:
     # Best-effort detection of the human-readable test name column.
     if not columns:
@@ -157,6 +216,7 @@ def _find_doe_split_column(columns: list[str]) -> str | None:
 
 
 _FWLU_RE = re.compile(r"FwLu(?P<lut>\d{2,3})(?!\d)", flags=re.IGNORECASE)
+_TX_CH_RE = re.compile(r"TX(?P<ch>[1-8])(?!\d)", flags=re.IGNORECASE)
 
 
 def _extract_lut_value(test_name: str):
@@ -167,6 +227,26 @@ def _extract_lut_value(test_name: str):
         return int(m.group("lut"))
     except Exception:
         return pd.NA
+
+
+def _extract_pa_channel(test_name: str) -> str | None:
+    m = _TX_CH_RE.search(str(test_name) if test_name is not None else "")
+    if not m:
+        return None
+    return f"TX{m.group('ch')}"
+
+
+def _ensure_pa_channel_column(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if "PA Channel" in df.columns:
+        df["PA Channel"] = df["PA Channel"].astype(str).str.strip()
+        return df
+    if "Test Name" in df.columns:
+        df["PA Channel"] = df["Test Name"].astype(str).map(_extract_pa_channel)
+        return df
+    df["PA Channel"] = ""
+    return df
 
 
 def _ensure_lut_value_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -231,6 +311,60 @@ def _r2_score(y_true: pd.Series, y_pred: pd.Series) -> float:
     return 1.0 - (ss_res / ss_tot)
 
 
+def _ols_fit_y_on_x(x: pd.Series, y: pd.Series) -> tuple[float, float]:
+    """Fit y = a*x + b using ordinary least squares.
+
+    Returns (a, b). If not enough variation, returns (nan, nan).
+    """
+    xx = pd.to_numeric(x, errors="coerce")
+    yy = pd.to_numeric(y, errors="coerce")
+    m = xx.notna() & yy.notna()
+    xx = xx[m].astype(float)
+    yy = yy[m].astype(float)
+    if len(xx) < 2:
+        return (math.nan, math.nan)
+    x_mean = float(xx.mean())
+    y_mean = float(yy.mean())
+    var_x = float(((xx - x_mean) ** 2).sum())
+    if var_x == 0.0:
+        return (math.nan, math.nan)
+    cov_xy = float(((xx - x_mean) * (yy - y_mean)).sum())
+    a = cov_xy / var_x
+    b = y_mean - (a * x_mean)
+    return (a, b)
+
+
+def _load_kf_values(*, input_xlsx: Path, sheet_name: str) -> pd.DataFrame:
+    """Load Kf values as a lookup table keyed by KF_MERGE_KEYS."""
+    if not str(sheet_name).strip():
+        raise SystemExit("KF_SHEET is empty. Set it in the USER CONFIG block.")
+    kf_df = pd.read_excel(input_xlsx, sheet_name=sheet_name)
+
+    missing = [c for c in (KF_MERGE_KEYS + [KF_VALUE_COL]) if c not in kf_df.columns]
+    if missing:
+        raise SystemExit(f"Kf sheet '{sheet_name}' missing columns: {missing}")
+
+    out = kf_df[KF_MERGE_KEYS + [KF_VALUE_COL]].copy()
+    out[KF_VALUE_COL] = _to_float_series(out[KF_VALUE_COL])
+    for k in KF_MERGE_KEYS:
+        out[k] = out[k].astype(str).str.strip()
+
+    out = out.dropna(subset=[KF_VALUE_COL])
+    # Keep the individual Kf values; if multiple measurements exist for the same
+    # DUT+Temperature, keep the first and warn (no aggregation).
+    dup_mask = out.duplicated(subset=KF_MERGE_KEYS, keep=False)
+    if bool(dup_mask.any()):
+        dup_cnt = int(dup_mask.sum())
+        print(
+            f"WARNING: KF sheet '{sheet_name}' has {dup_cnt} duplicate rows for keys {KF_MERGE_KEYS}. "
+            "Keeping the first occurrence per key (no aggregation)."
+        )
+        out = out.drop_duplicates(subset=KF_MERGE_KEYS, keep="first")
+
+    out = out.rename(columns={KF_VALUE_COL: "Kf"})
+    return out
+
+
 def _maybe_extend_txlo_group_cols_with_idac(df: pd.DataFrame, group_cols: list[str]) -> list[str]:
     if df is None or df.empty:
         return group_cols
@@ -247,7 +381,8 @@ def _compute_new_limits(
     group_cols: list[str],
     group_dict: dict,
     g: pd.DataFrame,
-    median_delta: float,
+    corr_col: str = "ATE_correlated",
+    residual_col: str = "Residual",
 ) -> dict:
     """Compute new limits based on correlated distribution.
 
@@ -256,12 +391,14 @@ def _compute_new_limits(
             - Limit_Method (string)
             - CorrMean, CorrStd, MaxAbsResidual
     """
-    corr = pd.to_numeric(g["ATE_correlated"], errors="coerce")
+    corr = pd.to_numeric(g[corr_col], errors="coerce")
     corr_mean = float(corr.mean())
     corr_std = float(corr.std(ddof=1)) if len(corr) > 1 else math.nan
 
-    residual = pd.to_numeric(g["Residual"], errors="coerce")
+    residual = pd.to_numeric(g[residual_col], errors="coerce")
     max_abs_residual = float(residual.abs().max()) if len(residual) else math.nan
+    residual_max = float(residual.max()) if len(residual) else math.nan
+    residual_min = float(residual.min()) if len(residual) else math.nan
 
     corr_low = math.nan
     corr_high = math.nan
@@ -269,7 +406,7 @@ def _compute_new_limits(
 
     mode = str(test_case_mode).strip().upper()
 
-    # Special case 1: MAX LO power (IDAC 112): requirements ± max|residual|
+    # Special case 1: MAX LO power (IDAC 112): requirements with signed-residual guardbands
     if mode == "TXLO":
         idac_val = None
         if LO_IDAC_COL in group_cols and LO_IDAC_COL in group_dict:
@@ -279,12 +416,17 @@ def _compute_new_limits(
             if len(idac_series.unique()) == 1:
                 idac_val = int(idac_series.iloc[0])
 
-        if idac_val == 112 and not math.isnan(max_abs_residual):
-            corr_low = float(LO_POWER_IDAC_112_REQ_MIN) + max_abs_residual
-            corr_high = float(LO_POWER_IDAC_112_REQ_MAX) - max_abs_residual
-            method = "requirements±max|residual| (LO IDAC 112)"
+        if idac_val == 112 and not math.isnan(residual_max) and not math.isnan(residual_min):
+            # Guardbanding based on extrema of signed residuals, but with absolute
+            # magnitudes to avoid wrong-direction shifts when all residuals have
+            # the same sign.
+            #   LTL: REQ_MIN + abs(max(residual))
+            #   UTL: REQ_MAX - abs(min(residual))
+            corr_low = float(LO_POWER_IDAC_112_REQ_MIN) + abs(residual_max)
+            corr_high = float(LO_POWER_IDAC_112_REQ_MAX) - abs(residual_min)
+            method = "requirements+abs(max(resid))/ -abs(min(resid)) (LO IDAC 112)"
 
-    # Special case 2: MAX PA power (LUT 255): requirements ± max|residual|
+    # Special case 2: MAX PA power (LUT 255): requirements with signed-residual guardbands
     if mode == "TXPA":
         lut_val = None
         if "LUT value" in group_cols and "LUT value" in group_dict:
@@ -294,10 +436,15 @@ def _compute_new_limits(
             if len(lut_series.unique()) == 1:
                 lut_val = int(lut_series.iloc[0])
 
-        if lut_val == 255 and not math.isnan(max_abs_residual):
-            corr_low = float(PA_POWER_LUT_255_REQ_MIN) + max_abs_residual
-            corr_high = float(PA_POWER_LUT_255_REQ_MAX) - max_abs_residual
-            method = "requirements±max|residual| (PA LUT 255)"
+        if lut_val == 255 and not math.isnan(residual_max) and not math.isnan(residual_min):
+            # Guardbanding based on extrema of signed residuals, but with absolute
+            # magnitudes to avoid wrong-direction shifts when all residuals have
+            # the same sign.
+            #   LTL: REQ_MIN + abs(max(residual))
+            #   UTL: REQ_MAX - abs(min(residual))
+            corr_low = float(PA_POWER_LUT_255_REQ_MIN) + abs(residual_max)
+            corr_high = float(PA_POWER_LUT_255_REQ_MAX) - abs(residual_min)
+            method = "requirements+abs(max(resid))/ -abs(min(resid)) (PA LUT 255)"
 
     # Default: mean ± 6σ on correlated distribution
     if math.isnan(corr_low) or math.isnan(corr_high):
@@ -309,6 +456,8 @@ def _compute_new_limits(
         "CorrMean": corr_mean,
         "CorrStd": corr_std,
         "MaxAbsResidual": max_abs_residual,
+        "ResidualMax": residual_max,
+        "ResidualMin": residual_min,
         "Corr_Low": corr_low,
         "Corr_High": corr_high,
         "Limit_Method": method,
@@ -357,6 +506,18 @@ if __name__ == "__main__":
 
     def run_one_same_sheet(sheet_name: str):
         df = pd.read_excel(input_xlsx, sheet_name=sheet_name)
+
+        # Best-effort remap for headers containing newlines/whitespace, e.g. "CV_\nLO_Power".
+        df = _remap_columns_best_effort(
+            df,
+            desired_cols=list(
+                dict.fromkeys(
+                    MERGE_KEYS
+                    + [CV_VALUE_COL, ATE_VALUE_COL, ATE_LOW_COL, ATE_HIGH_COL, ATE_UNIT_COL, LO_IDAC_COL, "LUT value"]
+                )
+            ),
+        )
+
         test_name_col = _find_test_name_column(list(df.columns))
         doe_split_col = _find_doe_split_column(list(df.columns))
         missing = [c for c in (MERGE_KEYS + [CV_VALUE_COL, ATE_VALUE_COL]) if c not in df.columns]
@@ -402,6 +563,15 @@ if __name__ == "__main__":
     def run_one_two_sheets():
         cv_df = pd.read_excel(input_xlsx, sheet_name=CV_SHEET)
         ate_df = pd.read_excel(input_xlsx, sheet_name=ATE_SHEET)
+
+        cv_df = _remap_columns_best_effort(
+            cv_df,
+            desired_cols=list(dict.fromkeys(MERGE_KEYS + [CV_VALUE_COL, ATE_LOW_COL, ATE_HIGH_COL, ATE_UNIT_COL, LO_IDAC_COL, "LUT value"])),
+        )
+        ate_df = _remap_columns_best_effort(
+            ate_df,
+            desired_cols=list(dict.fromkeys(MERGE_KEYS + [ATE_VALUE_COL, LO_IDAC_COL, "LUT value"])),
+        )
 
         test_name_cv = _find_test_name_column(list(cv_df.columns))
         test_name_ate = _find_test_name_column(list(ate_df.columns))
@@ -521,9 +691,33 @@ if __name__ == "__main__":
         if merged_local.empty:
             return
 
+        # Merge Kf (physics-based model)
+        kf_lookup = _load_kf_values(input_xlsx=input_xlsx, sheet_name=KF_SHEET)
+        merged_local = merged_local.merge(
+            kf_lookup,
+            how="left",
+            on=KF_MERGE_KEYS,
+            validate="many_to_one",
+        )
+        if "Kf" in merged_local.columns:
+            missing_kf = int(pd.to_numeric(merged_local["Kf"], errors="coerce").isna().sum())
+            total = int(len(merged_local))
+            print(f"{sheet_label}: Kf merge coverage = {total - missing_kf}/{total} rows")
+
         group_cols = _resolve_group_cols(merged_local)
         if "LUT value" in group_cols:
             merged_local = _ensure_lut_value_column(merged_local)
+
+            # LUT255: split correlation by PA channel (TX1..TX8) extracted from Test Name.
+            merged_local = _ensure_pa_channel_column(merged_local)
+            if "LUT value" in merged_local.columns and (merged_local["LUT value"] == 255).any():
+                # Keep non-255 data grouped together under a constant label.
+                merged_local["PA Channel"] = merged_local["PA Channel"].where(
+                    merged_local["LUT value"] == 255,
+                    other="ALL",
+                )
+                if "PA Channel" not in group_cols:
+                    group_cols = [*group_cols, "PA Channel"]
 
         group_cols = _maybe_extend_txlo_group_cols_with_idac(merged_local, group_cols)
 
@@ -541,6 +735,15 @@ if __name__ == "__main__":
             n_points = len(g)
             if n_points < MIN_POINTS_PER_GROUP:
                 continue
+
+            # Kf verification stats for output
+            kf_series = pd.to_numeric(g.get("Kf"), errors="coerce") if "Kf" in g.columns else pd.Series([math.nan] * len(g))
+            kf_missing = int(kf_series.isna().sum())
+            kf_present = int(kf_series.notna().sum())
+            kf_unique = int(pd.Series(kf_series.dropna().unique()).nunique()) if kf_present else 0
+            kf_min = float(kf_series.min()) if kf_present else math.nan
+            kf_max = float(kf_series.max()) if kf_present else math.nan
+            kf_mean = float(kf_series.mean()) if kf_present else math.nan
 
             test_name = ""
             if "Test Name" in g.columns:
@@ -566,8 +769,31 @@ if __name__ == "__main__":
             g["Residual"] = g["Delta(CV-ATE)"] - median_delta
             residual_std = float(g["Residual"].std(ddof=1)) if len(g) > 1 else math.nan
 
-            # R² for the offset-only model in ATE-domain: ATE_pred = CV - median_delta
-            r2 = _r2_score(g["ATE"], g["CV"] - median_delta)
+            # R² for the offset-only model in CV-domain: CV_pred = ATE + median_delta
+            r2_offset = _r2_score(g["CV"], g["ATE_correlated"])
+
+            # Physics-based: CV_pred = ATE - (alpha*Kf + beta), fitted from (ATE - CV) = alpha*Kf + beta
+            alpha = math.nan
+            beta = math.nan
+            r2_phys = math.nan
+            residual_std_phys = math.nan
+            if "Kf" in g.columns:
+                kf = pd.to_numeric(g["Kf"], errors="coerce")
+                d = pd.to_numeric(g["ATE"], errors="coerce") - pd.to_numeric(g["CV"], errors="coerce")
+                m_kf = kf.notna() & d.notna()
+                if int(m_kf.sum()) >= 2:
+                    alpha, beta = _ols_fit_y_on_x(kf[m_kf], d[m_kf])
+                    if not math.isnan(alpha) and not math.isnan(beta):
+                        g["ATE_correlated_Physics"] = g["ATE"] - (alpha * g["Kf"] + beta)
+                        g["Residual_Physics"] = g["CV"] - g["ATE_correlated_Physics"]
+                        r2_phys = _r2_score(g["CV"], g["ATE_correlated_Physics"])
+                        residual_std_phys = float(pd.to_numeric(g["Residual_Physics"], errors="coerce").std(ddof=1)) if len(g) > 1 else math.nan
+                if "ATE_correlated_Physics" not in g.columns:
+                    g["ATE_correlated_Physics"] = math.nan
+                    g["Residual_Physics"] = math.nan
+            else:
+                g["ATE_correlated_Physics"] = math.nan
+                g["Residual_Physics"] = math.nan
 
             # Limits: only ATE limits exist
             ate_low = None
@@ -598,25 +824,19 @@ if __name__ == "__main__":
                 group_cols=group_cols,
                 group_dict=group_dict,
                 g=g,
-                median_delta=median_delta,
             )
             corr_low = limits["Corr_Low"]
             corr_high = limits["Corr_High"]
 
-            # Special-cases: additional requirement-based limits using 3*sigma(residuals)
-            ltl_new_3s = math.nan
-            utl_new_3s = math.nan
-            if not math.isnan(residual_std):
-                if inferred_mode == "TXLO":
-                    idac_val = group_dict.get(LO_IDAC_COL) if LO_IDAC_COL in group_dict else None
-                    if idac_val == 112:
-                        ltl_new_3s = float(LO_POWER_IDAC_112_REQ_MIN) + (3.0 * residual_std)
-                        utl_new_3s = float(LO_POWER_IDAC_112_REQ_MAX) - (3.0 * residual_std)
-                else:
-                    lut_val = group_dict.get("LUT value") if "LUT value" in group_dict else None
-                    if lut_val == 255:
-                        ltl_new_3s = float(PA_POWER_LUT_255_REQ_MIN) + (3.0 * residual_std)
-                        utl_new_3s = float(PA_POWER_LUT_255_REQ_MAX) - (3.0 * residual_std)
+            # Physics-model limits (computed on physics-predicted CV distribution)
+            limits_phys = _compute_new_limits(
+                test_case_mode=inferred_mode,
+                group_cols=group_cols,
+                group_dict=group_dict,
+                g=g,
+                corr_col="ATE_correlated_Physics",
+                residual_col="Residual_Physics",
+            )
 
             corr_window_invalid = (
                 (not math.isnan(corr_low))
@@ -640,18 +860,35 @@ if __name__ == "__main__":
                     "N": n_points,
                     "MedianDelta(CV-ATE)": median_delta,
                     "MaxDelta(CV-ATE)": max_delta,
-                    "R2_OffsetModel": r2,
+                    "R2_OffsetModel": r2_offset,
                     "ResidualStd(Delta)": residual_std,
                     "MaxAbsResidual(Delta)": limits["MaxAbsResidual"],
+                    "ResidualMax(Delta)": limits["ResidualMax"],
+                    "ResidualMin(Delta)": limits["ResidualMin"],
                     "CorrMean": limits["CorrMean"],
                     "CorrStd": limits["CorrStd"],
                     "Corr_Low": corr_low,
                     "Corr_High": corr_high,
-                    "LTL_New_3s": ltl_new_3s,
-                    "UTL_New_3s": utl_new_3s,
                     "Corr_Window_Width": corr_window_width,
                     "Corr_Window_Invalid": corr_window_invalid,
                     "Limit_Method": limits["Limit_Method"],
+                    "Phys_alpha": alpha,
+                    "Phys_beta": beta,
+                    "R2_Physics": r2_phys,
+                    "ResidualStd_Physics": residual_std_phys,
+                    "Kf_N_Present": kf_present,
+                    "Kf_N_Missing": kf_missing,
+                    "Kf_Unique": kf_unique,
+                    "Kf_Min": kf_min,
+                    "Kf_Max": kf_max,
+                    "Kf_Mean": kf_mean,
+                    "CorrMean_Physics": limits_phys["CorrMean"],
+                    "CorrStd_Physics": limits_phys["CorrStd"],
+                    "ResidualMax_Physics": limits_phys["ResidualMax"],
+                    "ResidualMin_Physics": limits_phys["ResidualMin"],
+                    "Corr_Low_Physics": limits_phys["Corr_Low"],
+                    "Corr_High_Physics": limits_phys["Corr_High"],
+                    "Limit_Method_Physics": limits_phys["Limit_Method"],
                     "ATE_Low": ate_low,
                     "ATE_High": ate_high,
                     "Unit": unit,
@@ -666,21 +903,24 @@ if __name__ == "__main__":
                         **{k: r[k] for k in MERGE_KEYS},
                         # Extra context (helps sign-off and debugging). Present for TXPA.
                         "LUT value": (int(r["LUT value"]) if "LUT value" in g.columns and pd.notna(r.get("LUT value")) else pd.NA),
+                        "PA Channel": (str(r.get("PA Channel", "")).strip() if "PA Channel" in g.columns else ""),
                         "DoE split": (str(r.get("DoE split", "")).strip() if "DoE split" in g.columns else ""),
                         LO_IDAC_COL: (int(pd.to_numeric(r.get(LO_IDAC_COL), errors="coerce")) if LO_IDAC_COL in g.columns and pd.notna(r.get(LO_IDAC_COL)) else pd.NA),
                         "Test Name": (str(r.get("Test Name", "")).strip() if "Test Name" in g.columns else ""),
                         "CV": float(r["CV"]),
                         "ATE": float(r["ATE"]),
                         "ATE_correlated": float(r["ATE_correlated"]),
+                        "Kf": (float(r["Kf"]) if "Kf" in g.columns and pd.notna(r.get("Kf")) else math.nan),
+                        "ATE_correlated_Physics": (float(r["ATE_correlated_Physics"]) if pd.notna(r.get("ATE_correlated_Physics")) else math.nan),
                         "Delta(CV-ATE)": float(r["Delta(CV-ATE)"]),
                         "Residual": float(r["Residual"]),
+                        "Residual_Physics": (float(r["Residual_Physics"]) if pd.notna(r.get("Residual_Physics")) else math.nan),
                     }
                 )
 
-            # Plot (3 subplots):
-            # 1) per-sample series (CV vs index, ATE vs index) with DoE split structure
-            # 2) regression view (ATE vs CV) with offset-only line
-            # 3) correlated-domain series (CV vs index, ATE_correlated vs index) + correlated limits
+            # Plots (2 figures per test case):
+            # A) series figure (2 subplots): raw series + correlated series
+            # B) models figure (2 subplots): regression view + residuals per model
             if "DoE split" in g.columns:
                 g_sort = g.copy()
                 g_sort["__doe_sort"] = (
@@ -721,14 +961,25 @@ if __name__ == "__main__":
                 starts = [0] + boundaries
                 ends = boundaries + [len(doe)]
 
-            fig, (ax1, ax2, ax3) = plt.subplots(
-                nrows=3,
-                ncols=1,
-                figsize=(12.0, 12.0),
-                gridspec_kw={"height_ratios": [2.0, 2.0, 2.0]},
-            )
+            title_parts = [f"{k}={v}" for k, v in group_dict.items()]
+            if test_name:
+                title_parts.insert(1 if title_parts else 0, f"Test Name={test_name}")
+            title = " | ".join(title_parts)
+            title_wrapped = "\n".join(textwrap.wrap(f"{sheet_label} | {title}", width=110))
+            base = _safe_slug(title)
 
-            ax1.plot(
+            # =========================
+            # Figure A: Series (raw + correlated)
+            # =========================
+            fig_series, (ax_raw, ax_corr) = plt.subplots(
+                nrows=2,
+                ncols=1,
+                figsize=(12.0, 9.0),
+                gridspec_kw={"height_ratios": [2.0, 2.0]},
+            )
+            fig_series.suptitle(title_wrapped, fontsize=13, y=0.98)
+
+            ax_raw.plot(
                 x_idx,
                 g_plot["CV"],
                 marker="o",
@@ -737,7 +988,7 @@ if __name__ == "__main__":
                 markersize=6,
                 label="CV (individual)",
             )
-            ax1.plot(
+            ax_raw.plot(
                 x_idx,
                 g_plot["ATE"],
                 marker="s",
@@ -747,19 +998,18 @@ if __name__ == "__main__":
                 label="ATE (individual)",
             )
 
-            # Visual guide: mark DoE split boundaries + label each DoE segment
+            # DoE split boundaries + labels
             if doe is not None:
                 for cut in boundaries:
-                    ax1.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
+                    ax_raw.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
 
-                # Centered labels (x in data coords, y in axes coords)
-                blend1 = mtransforms.blended_transform_factory(ax1.transData, ax1.transAxes)
+                blend1 = mtransforms.blended_transform_factory(ax_raw.transData, ax_raw.transAxes)
                 for s, e in zip(starts, ends):
                     if e <= s:
                         continue
                     label = str(doe.iloc[s])
                     x_center = (s + (e - 1)) / 2.0
-                    ax1.text(
+                    ax_raw.text(
                         x_center,
                         0.96,
                         label,
@@ -772,114 +1022,41 @@ if __name__ == "__main__":
                         path_effects=[patheffects.withStroke(linewidth=3.0, foreground="white", alpha=0.9)],
                     )
 
-            # ATE limits removed (only correlated limits are relevant)
+            ax_raw.set_xlabel(x_label, fontsize=12)
+            ax_raw.set_ylabel(f"Value{(' ['+unit+']') if unit else ''}", fontsize=12)
+            ax_raw.tick_params(axis="both", labelsize=11)
+            ax_raw.grid(True, alpha=0.25)
+            ax_raw.set_xlim(-0.5, len(g_plot) - 0.5)
 
-            title_parts = [f"{k}={v}" for k, v in group_dict.items()]
-            if test_name:
-                title_parts.insert(1 if title_parts else 0, f"Test Name={test_name}")
-            title = " | ".join(title_parts)
-            title_wrapped = "\n".join(textwrap.wrap(f"{sheet_label} | {title}", width=110))
-            fig.suptitle(title_wrapped, fontsize=13, y=0.98)
-
-            ax1.set_xlabel(x_label, fontsize=12)
-            ax1.set_ylabel(f"Value{(' ['+unit+']') if unit else ''}", fontsize=12)
-            ax1.tick_params(axis="both", labelsize=11)
-            ax1.grid(True, alpha=0.25)
-
-            # Tight x/y scaling to data only
-            ax1.set_xlim(-0.5, len(g_plot) - 0.5)
             y_candidates = [
                 float(g_plot["CV"].min()),
                 float(g_plot["CV"].max()),
                 float(g_plot["ATE"].min()),
                 float(g_plot["ATE"].max()),
             ]
-
             y_min = min(y_candidates)
             y_max = max(y_candidates)
             y_span = y_max - y_min
             pad = (0.06 * y_span) if y_span > 0 else (abs(y_min) * 0.06 + 1.0)
-            ax1.set_ylim(y_min - pad, y_max + pad)
+            ax_raw.set_ylim(y_min - pad, y_max + pad)
 
-            # Keep the top subplot free of regression text (as requested).
             note_top = f"N={n_points}  median(CV-ATE)={median_delta:.4g}  max(CV-ATE)={max_delta:.4g}"
             if not math.isnan(residual_std):
                 note_top += f"  σ(residual)={residual_std:.4g}"
-            ax1.text(
+            ax_raw.text(
                 0.015,
                 0.02,
                 note_top,
-                transform=ax1.transAxes,
+                transform=ax_raw.transAxes,
                 fontsize=11,
                 va="bottom",
                 ha="left",
                 bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 3.0},
             )
+            ax_raw.legend(fontsize=11, framealpha=0.92)
 
-            ax1.legend(fontsize=11, framealpha=0.92)
-
-            # Regression subplot: CV vs ATE scattering + offset-only line (slope=1)
-            ax2.scatter(
-                g_plot["CV"],
-                g_plot["ATE"],
-                s=40,
-                alpha=0.95,
-                marker="o",
-                linewidths=1.1,
-                facecolors="none",
-                edgecolors="tab:blue",
-                zorder=3,
-                label="ATE raw (scatter)",
-            )
-            x_min = float(g_plot["CV"].min())
-            x_max = float(g_plot["CV"].max())
-            x_span = x_max - x_min
-            x_pad = (0.06 * x_span) if x_span > 0 else (abs(x_min) * 0.06 + 1.0)
-            x_line = pd.Series([x_min, x_max])
-            y_line = x_line - median_delta
-            ax2.plot(
-                x_line,
-                y_line,
-                linewidth=2.6,
-                linestyle="--",
-                color="tab:red",
-                zorder=1,
-                label=f"Offset model: ATE = CV - medianΔ",
-            )
-
-            ax2.set_xlabel(f"CV{(' ['+unit+']') if unit else ''}", fontsize=12)
-            ax2.set_ylabel(f"ATE{(' ['+unit+']') if unit else ''}", fontsize=12)
-            ax2.tick_params(axis="both", labelsize=11)
-            ax2.grid(True, alpha=0.25)
-            ax2.set_xlim(x_min - x_pad, x_max + x_pad)
-
-            y2_candidates = [
-                float(g_plot["ATE"].min()),
-                float(g_plot["ATE"].max()),
-                float(y_line.min()),
-                float(y_line.max()),
-            ]
-            y2_min = min(y2_candidates)
-            y2_max = max(y2_candidates)
-            y2_span = y2_max - y2_min
-            y2_pad = (0.06 * y2_span) if y2_span > 0 else (abs(y2_min) * 0.06 + 1.0)
-            ax2.set_ylim(y2_min - y2_pad, y2_max + y2_pad)
-
-            note_reg = f"N={n_points}  R²={r2:.3f}  medianΔ={median_delta:.4g}  maxΔ={max_delta:.4g}"
-            ax2.text(
-                0.015,
-                0.02,
-                note_reg,
-                transform=ax2.transAxes,
-                fontsize=11,
-                va="bottom",
-                ha="left",
-                bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 3.0},
-            )
-            ax2.legend(fontsize=10, framealpha=0.92)
-
-            # Correlated-domain subplot (standard series like subplot 1)
-            ax3.plot(
+            # Correlated series
+            ax_corr.plot(
                 x_idx,
                 g_plot["CV"],
                 marker="o",
@@ -888,28 +1065,38 @@ if __name__ == "__main__":
                 markersize=6,
                 label="CV (individual)",
             )
-            ax3.plot(
+            ax_corr.plot(
                 x_idx,
                 g_plot["ATE_correlated"],
                 marker="^",
                 linestyle="--",
                 linewidth=2.2,
                 markersize=6,
-                label="ATE_correlated (individual)",
+                label="Offset-correlated (CV_pred)",
             )
 
-            # DoE split boundaries + labels (same as subplot 1)
+            if "ATE_correlated_Physics" in g_plot.columns and pd.to_numeric(g_plot["ATE_correlated_Physics"], errors="coerce").notna().any():
+                ax_corr.plot(
+                    x_idx,
+                    g_plot["ATE_correlated_Physics"],
+                    marker="D",
+                    linestyle=":",
+                    linewidth=2.2,
+                    markersize=5,
+                    label="Physics-correlated (CV_pred)",
+                )
+
             if doe is not None:
                 for cut in boundaries:
-                    ax3.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
+                    ax_corr.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
 
-                blend3 = mtransforms.blended_transform_factory(ax3.transData, ax3.transAxes)
+                blend3 = mtransforms.blended_transform_factory(ax_corr.transData, ax_corr.transAxes)
                 for s, e in zip(starts, ends):
                     if e <= s:
                         continue
                     label = str(doe.iloc[s])
                     x_center = (s + (e - 1)) / 2.0
-                    ax3.text(
+                    ax_corr.text(
                         x_center,
                         0.96,
                         label,
@@ -922,21 +1109,24 @@ if __name__ == "__main__":
                         path_effects=[patheffects.withStroke(linewidth=3.0, foreground="white", alpha=0.9)],
                     )
 
-            if not math.isnan(corr_low):
-                ax3.axhline(
-                    corr_low,
+            # Limits (physics-based)
+            corr_low_phys = limits_phys["Corr_Low"]
+            corr_high_phys = limits_phys["Corr_High"]
+            if not math.isnan(corr_low_phys):
+                ax_corr.axhline(
+                    corr_low_phys,
                     color="cyan",
                     linestyle="-.",
                     linewidth=2.2,
-                    label=f"Corr Low = {corr_low:.4g} dBm",
+                    label=f"Corr Low (phys) = {corr_low_phys:.4g} dBm",
                 )
-            if not math.isnan(corr_high):
-                ax3.axhline(
-                    corr_high,
+            if not math.isnan(corr_high_phys):
+                ax_corr.axhline(
+                    corr_high_phys,
                     color="cyan",
                     linestyle="-.",
                     linewidth=2.2,
-                    label=f"Corr High = {corr_high:.4g} dBm",
+                    label=f"Corr High (phys) = {corr_high_phys:.4g} dBm",
                 )
 
             # Requirements lines (only for the relevant MAX power special-cases)
@@ -954,84 +1144,211 @@ if __name__ == "__main__":
                     req_max = float(PA_POWER_LUT_255_REQ_MAX)
 
             if not math.isnan(req_min):
-                ax3.axhline(req_min, color="red", linestyle="-", linewidth=2.0, label=f"REQ Min = {req_min:.4g} dBm")
+                ax_corr.axhline(req_min, color="red", linestyle="-", linewidth=2.0, label=f"REQ Min = {req_min:.4g} dBm")
             if not math.isnan(req_max):
-                ax3.axhline(req_max, color="red", linestyle="-", linewidth=2.0, label=f"REQ Max = {req_max:.4g} dBm")
+                ax_corr.axhline(req_max, color="red", linestyle="-", linewidth=2.0, label=f"REQ Max = {req_max:.4g} dBm")
 
-            # Additional special-case limits: REQ ± 3*sigma(residuals)
-            ltl_new_3s_plot = math.nan
-            utl_new_3s_plot = math.nan
-            if (not math.isnan(req_min)) and (not math.isnan(req_max)) and (not math.isnan(residual_std)):
-                ltl_new_3s_plot = float(req_min) + (3.0 * residual_std)
-                utl_new_3s_plot = float(req_max) - (3.0 * residual_std)
-                ax3.axhline(
-                    ltl_new_3s_plot,
-                    color="orange",
-                    linestyle="--",
-                    linewidth=2.0,
-                    label=f"LTL_New_3s = {ltl_new_3s_plot:.4g} dBm",
-                )
-                ax3.axhline(
-                    utl_new_3s_plot,
-                    color="orange",
-                    linestyle="--",
-                    linewidth=2.0,
-                    label=f"UTL_New_3s = {utl_new_3s_plot:.4g} dBm",
-                )
-
-            # Tight y scaling for correlated-domain subplot (data + limits + req)
-            y3_candidates = [
+            y_corr_candidates = [
                 float(pd.to_numeric(g_plot["CV"], errors="coerce").min()),
                 float(pd.to_numeric(g_plot["CV"], errors="coerce").max()),
                 float(pd.to_numeric(g_plot["ATE_correlated"], errors="coerce").min()),
                 float(pd.to_numeric(g_plot["ATE_correlated"], errors="coerce").max()),
             ]
-            if not math.isnan(corr_low):
-                y3_candidates.append(float(corr_low))
-            if not math.isnan(corr_high):
-                y3_candidates.append(float(corr_high))
+            if "ATE_correlated_Physics" in g_plot.columns:
+                phys_vals = pd.to_numeric(g_plot["ATE_correlated_Physics"], errors="coerce")
+                if phys_vals.notna().any():
+                    y_corr_candidates.append(float(phys_vals.min()))
+                    y_corr_candidates.append(float(phys_vals.max()))
+            if not math.isnan(corr_low_phys):
+                y_corr_candidates.append(float(corr_low_phys))
+            if not math.isnan(corr_high_phys):
+                y_corr_candidates.append(float(corr_high_phys))
             if not math.isnan(req_min):
-                y3_candidates.append(float(req_min))
+                y_corr_candidates.append(float(req_min))
             if not math.isnan(req_max):
-                y3_candidates.append(float(req_max))
-            if not math.isnan(ltl_new_3s_plot):
-                y3_candidates.append(float(ltl_new_3s_plot))
-            if not math.isnan(utl_new_3s_plot):
-                y3_candidates.append(float(utl_new_3s_plot))
+                y_corr_candidates.append(float(req_max))
 
-            y3_min = min(y3_candidates)
-            y3_max = max(y3_candidates)
-            y3_span = y3_max - y3_min
-            y3_pad = (0.06 * y3_span) if y3_span > 0 else (abs(y3_min) * 0.06 + 1.0)
-            ax3.set_ylim(y3_min - y3_pad, y3_max + y3_pad)
+            y_corr_min = min(y_corr_candidates)
+            y_corr_max = max(y_corr_candidates)
+            y_corr_span = y_corr_max - y_corr_min
+            y_corr_pad = (0.06 * y_corr_span) if y_corr_span > 0 else (abs(y_corr_min) * 0.06 + 1.0)
+            ax_corr.set_ylim(y_corr_min - y_corr_pad, y_corr_max + y_corr_pad)
 
-            ax3.set_xlabel(x_label, fontsize=12)
-            ax3.set_ylabel(f"Value{(' ['+unit+']') if unit else ''}", fontsize=12)
-            ax3.tick_params(axis="both", labelsize=11)
-            ax3.grid(True, alpha=0.25)
-            ax3.legend(fontsize=10, framealpha=0.92)
+            ax_corr.set_xlabel(x_label, fontsize=12)
+            ax_corr.set_ylabel(f"Value{(' ['+unit+']') if unit else ''}", fontsize=12)
+            ax_corr.tick_params(axis="both", labelsize=11)
+            ax_corr.grid(True, alpha=0.25)
+            ax_corr.legend(fontsize=10, framealpha=0.92)
 
-            note_dist = f"Method={limits['Limit_Method']}  μ_corr={limits['CorrMean']:.4g}  σ_corr={limits['CorrStd']:.4g}"
-            if not math.isnan(limits["MaxAbsResidual"]):
-                note_dist += f"  max|res|={limits['MaxAbsResidual']:.4g}"
+            note_dist = (
+                f"Physics: alpha={alpha:.4g} beta={beta:.4g}  R²={r2_phys:.3f}  "
+                f"Method={limits_phys['Limit_Method']}  μ_corr={limits_phys['CorrMean']:.4g}  σ_corr={limits_phys['CorrStd']:.4g}"
+            )
+            if not math.isnan(limits_phys["MaxAbsResidual"]):
+                note_dist += f"  max|res|={limits_phys['MaxAbsResidual']:.4g}"
             if corr_window_invalid:
                 note_dist += "  [INVALID LIMIT WINDOW]"
-            ax3.text(
+            ax_corr.text(
                 0.015,
                 0.02,
                 note_dist,
-                transform=ax3.transAxes,
+                transform=ax_corr.transAxes,
                 fontsize=11,
                 va="bottom",
                 ha="left",
                 bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 3.0},
             )
 
-            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            fig_series.tight_layout(rect=[0, 0, 1, 0.96])
+            fig_series.savefig(local_plots_dir / f"{base}__series.png", dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close(fig_series)
 
-            fname = _safe_slug(title) + ".png"
-            fig.savefig(local_plots_dir / fname, dpi=PLOT_DPI, bbox_inches="tight")
-            plt.close(fig)
+            # =========================
+            # Figure B: Models (regression + residuals)
+            # =========================
+            fig_models, (ax_reg, ax_res) = plt.subplots(
+                nrows=2,
+                ncols=1,
+                figsize=(12.0, 9.0),
+                gridspec_kw={"height_ratios": [2.0, 2.0]},
+            )
+            fig_models.suptitle(title_wrapped, fontsize=13, y=0.98)
+
+            ax_reg.scatter(
+                g_plot["CV"],
+                g_plot["ATE"],
+                s=40,
+                alpha=0.95,
+                marker="o",
+                linewidths=1.1,
+                facecolors="none",
+                edgecolors="tab:blue",
+                zorder=3,
+                label="ATE raw (scatter)",
+            )
+            x_min = float(g_plot["CV"].min())
+            x_max = float(g_plot["CV"].max())
+            x_span = x_max - x_min
+            x_pad = (0.06 * x_span) if x_span > 0 else (abs(x_min) * 0.06 + 1.0)
+            x_line = pd.Series([x_min, x_max])
+            y_line = x_line - median_delta
+            ax_reg.plot(
+                x_line,
+                y_line,
+                linewidth=2.6,
+                linestyle="--",
+                color="tab:red",
+                zorder=1,
+                label="Offset model: ATE = CV - medianΔ",
+            )
+
+            if (
+                (not math.isnan(alpha))
+                and (not math.isnan(beta))
+                and ("Kf" in g_plot.columns)
+                and pd.to_numeric(g_plot["Kf"], errors="coerce").notna().any()
+            ):
+                kf_plot = pd.to_numeric(g_plot["Kf"], errors="coerce")
+                ate_pred_phys = pd.to_numeric(g_plot["CV"], errors="coerce") + (alpha * kf_plot + beta)
+                m_phys = ate_pred_phys.notna() & pd.to_numeric(g_plot["CV"], errors="coerce").notna()
+                if bool(m_phys.any()):
+                    ax_reg.scatter(
+                        pd.to_numeric(g_plot.loc[m_phys, "CV"], errors="coerce"),
+                        ate_pred_phys.loc[m_phys],
+                        s=26,
+                        alpha=0.85,
+                        marker="D",
+                        linewidths=0.8,
+                        facecolors="none",
+                        edgecolors="tab:orange",
+                        zorder=2,
+                        label="Physics: ATE = CV + (αKf + β)",
+                    )
+
+            ax_reg.set_xlabel(f"CV{(' ['+unit+']') if unit else ''}", fontsize=12)
+            ax_reg.set_ylabel(f"ATE{(' ['+unit+']') if unit else ''}", fontsize=12)
+            ax_reg.tick_params(axis="both", labelsize=11)
+            ax_reg.grid(True, alpha=0.25)
+            ax_reg.set_xlim(x_min - x_pad, x_max + x_pad)
+
+            y2_candidates = [
+                float(g_plot["ATE"].min()),
+                float(g_plot["ATE"].max()),
+                float(y_line.min()),
+                float(y_line.max()),
+            ]
+            y2_min = min(y2_candidates)
+            y2_max = max(y2_candidates)
+            y2_span = y2_max - y2_min
+            y2_pad = (0.06 * y2_span) if y2_span > 0 else (abs(y2_min) * 0.06 + 1.0)
+            ax_reg.set_ylim(y2_min - y2_pad, y2_max + y2_pad)
+
+            note_reg = f"N={n_points}  R²_offset={r2_offset:.3f}  R²_phys={r2_phys:.3f}  medianΔ={median_delta:.4g}"
+            ax_reg.text(
+                0.015,
+                0.02,
+                note_reg,
+                transform=ax_reg.transAxes,
+                fontsize=11,
+                va="bottom",
+                ha="left",
+                bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 3.0},
+            )
+            ax_reg.legend(fontsize=10, framealpha=0.92)
+
+            ax_res.axhline(0.0, color="black", linewidth=1.2, alpha=0.6)
+            ax_res.plot(
+                x_idx,
+                pd.to_numeric(g_plot.get("Residual"), errors="coerce"),
+                marker="o",
+                linestyle="-",
+                linewidth=1.8,
+                markersize=5,
+                label="Residual (offset)",
+            )
+            if "Residual_Physics" in g_plot.columns and pd.to_numeric(g_plot["Residual_Physics"], errors="coerce").notna().any():
+                ax_res.plot(
+                    x_idx,
+                    pd.to_numeric(g_plot["Residual_Physics"], errors="coerce"),
+                    marker="D",
+                    linestyle=":",
+                    linewidth=1.8,
+                    markersize=4,
+                    label="Residual (physics)",
+                )
+
+            if doe is not None:
+                for cut in boundaries:
+                    ax_res.axvline(cut - 0.5, color="gray", linestyle="--", linewidth=1.2, alpha=0.45, zorder=0)
+
+                blendr = mtransforms.blended_transform_factory(ax_res.transData, ax_res.transAxes)
+                for s, e in zip(starts, ends):
+                    if e <= s:
+                        continue
+                    label = str(doe.iloc[s])
+                    x_center = (s + (e - 1)) / 2.0
+                    ax_res.text(
+                        x_center,
+                        0.96,
+                        label,
+                        transform=blendr,
+                        ha="center",
+                        va="top",
+                        fontsize=11,
+                        color="black",
+                        zorder=5,
+                        path_effects=[patheffects.withStroke(linewidth=3.0, foreground="white", alpha=0.9)],
+                    )
+
+            ax_res.set_xlabel(x_label, fontsize=12)
+            ax_res.set_ylabel(f"Residual{(' ['+unit+']') if unit else ''}", fontsize=12)
+            ax_res.tick_params(axis="both", labelsize=11)
+            ax_res.grid(True, alpha=0.25)
+            ax_res.legend(fontsize=10, framealpha=0.92)
+
+            fig_models.tight_layout(rect=[0, 0, 1, 0.96])
+            fig_models.savefig(local_plots_dir / f"{base}__models.png", dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close(fig_models)
 
     # Run
     if sheets_to_run:

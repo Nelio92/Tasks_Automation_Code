@@ -49,19 +49,23 @@ RUN_WITH_IN_CODE_CONFIG = True
 
 INPUT_FOLDER = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Raw_Data_TE"  # e.g. r"C:\UserData\Infineon\...\Raw_Data_TE"
 #OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_DPLL_PN_Data.xlsx"  # e.g. r"C:\UserData\Infineon\...\Extracted_TX_Data.xlsx" OR a folder path
-OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_LO_Power_Data.xlsx"
-#OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_PA_Power_Data.xlsx"  
+#OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_LO_Power_Data.xlsx"
+#OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_PA_Power_Data.xlsx" 
+OUTPUT_XLSX = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/ATE_Extracted_Kf_Data_DoE.xlsx"  
 
 # Provide chips either as a string list or via a CSV/XLSX file:
 CHIPS = r""  # e.g. r"02,25,70;02,35,8"
 #CHIPS_FILE = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/Raw_Data_TE/CTRX8188_CV_TE_Correlation_Chip_IDs_DPLL_PN.xlsx"  # e.g. r"C:\path\to\chips.csv"
 CHIPS_FILE = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/CTRX8188_CV_TE_Correlation_Chip_IDs_LO_Power.xlsx"  
 #CHIPS_FILE = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/CTRX8188_CV_TE_Correlation_Chip_IDs_PA_Power.xlsx"  
+#CHIPS_FILE = r"C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/CV_TE_Correlation/CTRX8188_CV_TE_Correlation_Chip_IDs_PA_Power_DoE.xlsx"  
 
 # Tests: comma/semicolon separated tokens; ranges allowed
 #TESTS = r"52004-52009,52047,52064-52065,52095,52104-52105"  # e.g. r"52065,52085,53100-53105"
-TESTS = r"57006-57009,57039-57051,57099-57111,57159-57171,57219-57231,57279-57291,57339-57351"  
+#TESTS = r"57006-57009,57039-57051,57099-57111,57159-57171,57219-57231,57279-57291,57339-57351"  
 #TESTS = r"53171-53290,53719-53838,54139-54258,54489-54608,55139-55258,55489-55608" 
+#TESTS = r"52046,52084,52094,53171-53290,53719-53838,54139-54258,54489-54608,55139-55258,55489-55608"
+TESTS = r"52046,52084,52094" 
 
 # Excel only:
 SHEET = r""  # e.g. r"Sheet1" (leave empty for first sheet)
