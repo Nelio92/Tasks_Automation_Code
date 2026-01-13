@@ -92,7 +92,7 @@ PLOT_DPI = 160
 # LO and PA power REQUIREMENTS
 LO_POWER_IDAC_112_REQ_MIN = 9  # dBm
 LO_POWER_IDAC_112_REQ_MAX = 16   # dBm
-PA_POWER_LUT_255_REQ_MIN = 13  # dBm
+PA_POWER_LUT_255_REQ_MIN = 9  # dBm
 PA_POWER_LUT_255_REQ_MAX = 16   # dBm
 
 # =========================

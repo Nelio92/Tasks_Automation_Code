@@ -38,12 +38,12 @@ import pandas as pd
 # =========================
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-#INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_PA_Power_Data_DoE.xlsx")
-#OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_DoE.xlsx")  # can also be a folder path
-#OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
-INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_LO_Power_Data.xlsx")
-OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXLO_Power_DoE.xlsx")  # can also be a folder path
-OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_LO_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_PA_Power_Data_DoE.xlsx")
+OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_DoE.xlsx")  # can also be a folder path
+OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+#INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_LO_Power_Data.xlsx")
+#OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXLO_Power_DoE.xlsx")  # can also be a folder path
+#OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_LO_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
 
 # If you want to process multiple same-layout sheets (CV+ATE columns in each sheet), list them here.
 # When non-empty, this overrides CV_SHEET/ATE_SHEET and runs each sheet independently.
@@ -66,8 +66,8 @@ MERGE_KEYS = [
 
 # Required columns containing numeric results
 # For the provided PN correlation workbook these are in the same sheet.
-CV_VALUE_COL = "CV_LO_Power"    # in-sheet CV values
-ATE_VALUE_COL = "ATE_LO_Power"  # in-sheet ATE values
+CV_VALUE_COL = "CV_PA_Power"    # in-sheet CV values
+ATE_VALUE_COL = "ATE_PA_Power"  # in-sheet ATE values
 
 # Physics-based model input (Kf)
 KF_SHEET = "KF_FE"  # new input parameter
@@ -90,7 +90,7 @@ ATE_UNIT_COL = "Unit"
 # - TXLO power: grouped by Test Number → Voltage corner → Frequency → Temperature
 # - TXPA power: grouped by LUT value → Voltage corner → Frequency → Temperature
 # Set to "auto" to pick TXPA grouping when a usable LUT value is present.
-TEST_CASE_TYPE = "TXLO"  # "TXLO" | "TXPA" | "auto"
+TEST_CASE_TYPE = "TXPA"  # "TXLO" | "TXPA" | "auto"
 
 TXLO_GROUP_COLS = ["Test Number", "Voltage corner", "Frequency_GHz", "Temperature"]
 TXPA_GROUP_COLS = ["LUT value", "Voltage corner", "Frequency_GHz", "Temperature"]
@@ -108,7 +108,7 @@ PLOT_DPI = 160
 # LO and PA power REQUIREMENTS
 LO_POWER_IDAC_112_REQ_MIN = 9  # dBm
 LO_POWER_IDAC_112_REQ_MAX = 16   # dBm
-PA_POWER_LUT_255_REQ_MIN = 13  # dBm
+PA_POWER_LUT_255_REQ_MIN = 10  # dBm
 PA_POWER_LUT_255_REQ_MAX = 16   # dBm
 
 # =========================
@@ -1109,24 +1109,24 @@ if __name__ == "__main__":
                         path_effects=[patheffects.withStroke(linewidth=3.0, foreground="white", alpha=0.9)],
                     )
 
-            # Limits (physics-based)
-            corr_low_phys = limits_phys["Corr_Low"]
-            corr_high_phys = limits_phys["Corr_High"]
-            if not math.isnan(corr_low_phys):
+            # Limits (offset model) - use Corr_Low/Corr_High from the offset-only model
+            corr_low_plot = limits["Corr_Low"]
+            corr_high_plot = limits["Corr_High"]
+            if not math.isnan(corr_low_plot):
                 ax_corr.axhline(
-                    corr_low_phys,
+                    corr_low_plot,
                     color="cyan",
                     linestyle="-.",
                     linewidth=2.2,
-                    label=f"Corr Low (phys) = {corr_low_phys:.4g} dBm",
+                    label=f"Corr Low = {corr_low_plot:.4g} dBm",
                 )
-            if not math.isnan(corr_high_phys):
+            if not math.isnan(corr_high_plot):
                 ax_corr.axhline(
-                    corr_high_phys,
+                    corr_high_plot,
                     color="cyan",
                     linestyle="-.",
                     linewidth=2.2,
-                    label=f"Corr High (phys) = {corr_high_phys:.4g} dBm",
+                    label=f"Corr High = {corr_high_plot:.4g} dBm",
                 )
 
             # Requirements lines (only for the relevant MAX power special-cases)
@@ -1159,10 +1159,10 @@ if __name__ == "__main__":
                 if phys_vals.notna().any():
                     y_corr_candidates.append(float(phys_vals.min()))
                     y_corr_candidates.append(float(phys_vals.max()))
-            if not math.isnan(corr_low_phys):
-                y_corr_candidates.append(float(corr_low_phys))
-            if not math.isnan(corr_high_phys):
-                y_corr_candidates.append(float(corr_high_phys))
+            if not math.isnan(corr_low_plot):
+                y_corr_candidates.append(float(corr_low_plot))
+            if not math.isnan(corr_high_plot):
+                y_corr_candidates.append(float(corr_high_plot))
             if not math.isnan(req_min):
                 y_corr_candidates.append(float(req_min))
             if not math.isnan(req_max):
@@ -1181,11 +1181,12 @@ if __name__ == "__main__":
             ax_corr.legend(fontsize=10, framealpha=0.92)
 
             note_dist = (
-                f"Physics: alpha={alpha:.4g} beta={beta:.4g}  R²={r2_phys:.3f}  "
-                f"Method={limits_phys['Limit_Method']}  μ_corr={limits_phys['CorrMean']:.4g}  σ_corr={limits_phys['CorrStd']:.4g}"
+                f"Offset limits: Method={limits['Limit_Method']}  μ_corr={limits['CorrMean']:.4g}  σ_corr={limits['CorrStd']:.4g}"
             )
-            if not math.isnan(limits_phys["MaxAbsResidual"]):
-                note_dist += f"  max|res|={limits_phys['MaxAbsResidual']:.4g}"
+            if not math.isnan(limits["MaxAbsResidual"]):
+                note_dist += f"  max|res|={limits['MaxAbsResidual']:.4g}"
+            if not math.isnan(alpha) and not math.isnan(beta):
+                note_dist += f"  |  Physics: alpha={alpha:.4g} beta={beta:.4g}  R²={r2_phys:.3f}"
             if corr_window_invalid:
                 note_dist += "  [INVALID LIMIT WINDOW]"
             ax_corr.text(
