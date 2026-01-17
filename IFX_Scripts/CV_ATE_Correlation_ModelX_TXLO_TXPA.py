@@ -24,12 +24,10 @@ This script is designed to be configured in-code (no CLI required).
 """
 
 from __future__ import annotations
-
 import math
 import re
 import textwrap
 from pathlib import Path
-
 import pandas as pd
 
 
@@ -38,19 +36,18 @@ import pandas as pd
 # =========================
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_PA_Power_Data_DoE.xlsx")
-OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_DoE.xlsx")  # can also be a folder path
-OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
-#INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_LO_Power_Data.xlsx")
-#OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXLO_Power_DoE.xlsx")  # can also be a folder path
-#OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_LO_Power_DoE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+#INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_PA_Power_Data_DoE.xlsx")
+#OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_BE.xlsx")  # can also be a folder path
+#OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_BE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_LO_Power_Data.xlsx")
+OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXLO_Power_FE.xlsx")  # can also be a folder path
+OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_LO_Power_FE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
 
 # If you want to process multiple same-layout sheets (CV+ATE columns in each sheet), list them here.
 # When non-empty, this overrides CV_SHEET/ATE_SHEET and runs each sheet independently.
 SHEETS_TO_RUN = ["FE_Filtered"]
 CV_SHEET = r""  # used when SHEETS_TO_RUN is empty
 ATE_SHEET = r""  # used when SHEETS_TO_RUN is empty
-
 # Columns that identify the same device/test row in both sheets.
 # These should exist in both CV and ATE sheets.
 MERGE_KEYS = [
@@ -63,12 +60,10 @@ MERGE_KEYS = [
     "Frequency_GHz",
     "Test Number",
 ]
-
 # Required columns containing numeric results
 # For the provided PN correlation workbook these are in the same sheet.
-CV_VALUE_COL = "CV_PA_Power"    # in-sheet CV values
-ATE_VALUE_COL = "ATE_PA_Power"  # in-sheet ATE values
-
+CV_VALUE_COL = "CV_LO_Power"    # in-sheet CV values
+ATE_VALUE_COL = "ATE_LO_Power"  # in-sheet ATE values
 # Physics-based model input (Kf)
 KF_SHEET = "KF_FE"  # new input parameter
 KF_VALUE_COL = "Test Value"
@@ -77,34 +72,28 @@ KF_VALUE_COL = "Test Value"
 # provides Kf per DUT+temperature and is tagged by corner/frequency; we therefore
 # merge only by DUT Nr + Temperature and broadcast to all corners/frequencies.
 KF_MERGE_KEYS = ["DUT Nr", "Temperature"]
-
 # TXLO-specific identifier (optional but recommended to keep test-cases separated)
 LO_IDAC_COL = "LO IDAC"
-
+# Optional process context (used to detect BE insertion)
+INSERTION_TYPE_COL = "Insertion Type"
 # Optional columns (if present) for limits (ATE limits)
 ATE_LOW_COL = "Low"
 ATE_HIGH_COL = "High"
 ATE_UNIT_COL = "Unit"
-
 # Test-case definition
 # - TXLO power: grouped by Test Number → Voltage corner → Frequency → Temperature
 # - TXPA power: grouped by LUT value → Voltage corner → Frequency → Temperature
 # Set to "auto" to pick TXPA grouping when a usable LUT value is present.
-TEST_CASE_TYPE = "TXPA"  # "TXLO" | "TXPA" | "auto"
-
+TEST_CASE_TYPE = "auto"  # "TXLO" | "TXPA" | "auto"
 TXLO_GROUP_COLS = ["Test Number", "Voltage corner", "Frequency_GHz", "Temperature"]
 TXPA_GROUP_COLS = ["LUT value", "Voltage corner", "Frequency_GHz", "Temperature"]
-
 # Correlation / derived-limit settings
 MIN_POINTS_PER_GROUP = 5
-
 # New limits default behavior:
 #   correlated limits = mean(ATE_correlated) ± 6σ(ATE_correlated)
 CORRELATED_SIGMA_MULT = 6.0
-
 # Plot settings
 PLOT_DPI = 160
-
 # LO and PA power REQUIREMENTS
 LO_POWER_IDAC_112_REQ_MIN = 9  # dBm
 LO_POWER_IDAC_112_REQ_MAX = 16   # dBm
@@ -375,12 +364,34 @@ def _maybe_extend_txlo_group_cols_with_idac(df: pd.DataFrame, group_cols: list[s
     return [*TXLO_GROUP_COLS, LO_IDAC_COL]
 
 
+def _is_be_insertion(sheet_label: str, g: pd.DataFrame) -> bool:
+    """Detect BE insertion context.
+
+    True if either:
+      - the sheet label contains 'BE' (case-insensitive), e.g. 'BE_Filtered'
+      - an 'Insertion Type' column contains 'BE' for any row in the group
+    """
+    if str(sheet_label).strip() and "BE" in str(sheet_label).upper():
+        return True
+    if g is not None and not g.empty and INSERTION_TYPE_COL in g.columns:
+        s = (
+            g[INSERTION_TYPE_COL]
+            .astype(str)
+            .replace({"nan": "", "None": ""})
+            .str.strip()
+            .str.upper()
+        )
+        return bool(s.str.contains("BE", na=False).any())
+    return False
+
+
 def _compute_new_limits(
     *,
     test_case_mode: str,
     group_cols: list[str],
     group_dict: dict,
     g: pd.DataFrame,
+    sheet_label: str = "",
     corr_col: str = "ATE_correlated",
     residual_col: str = "Residual",
 ) -> dict:
@@ -406,6 +417,8 @@ def _compute_new_limits(
 
     mode = str(test_case_mode).strip().upper()
 
+    is_be = _is_be_insertion(sheet_label, g)
+
     # Special case 1: MAX LO power (IDAC 112): requirements with signed-residual guardbands
     if mode == "TXLO":
         idac_val = None
@@ -420,11 +433,16 @@ def _compute_new_limits(
             # Guardbanding based on extrema of signed residuals, but with absolute
             # magnitudes to avoid wrong-direction shifts when all residuals have
             # the same sign.
-            #   LTL: REQ_MIN + abs(max(residual))
-            #   UTL: REQ_MAX - abs(min(residual))
-            corr_low = float(LO_POWER_IDAC_112_REQ_MIN) + abs(residual_max)
-            corr_high = float(LO_POWER_IDAC_112_REQ_MAX) - abs(residual_min)
-            method = "requirements+abs(max(resid))/ -abs(min(resid)) (LO IDAC 112)"
+            if is_be:
+                corr_low = float(LO_POWER_IDAC_112_REQ_MIN)
+                corr_high = float(LO_POWER_IDAC_112_REQ_MAX)
+                method = "REQ_MIN/REQ_MAX (BE, LO IDAC 112)"
+            else:
+                #   LTL: REQ_MIN + abs(min(residual))
+                #   UTL: REQ_MAX - abs(max(residual))
+                corr_low = float(LO_POWER_IDAC_112_REQ_MIN) + abs(residual_min)
+                corr_high = float(LO_POWER_IDAC_112_REQ_MAX) - abs(residual_max)
+                method = "REQ_MIN + abs(residual_min); REQ_MAX - abs(residual_max) (LO IDAC 112)"
 
     # Special case 2: MAX PA power (LUT 255): requirements with signed-residual guardbands
     if mode == "TXPA":
@@ -440,11 +458,16 @@ def _compute_new_limits(
             # Guardbanding based on extrema of signed residuals, but with absolute
             # magnitudes to avoid wrong-direction shifts when all residuals have
             # the same sign.
-            #   LTL: REQ_MIN + abs(max(residual))
-            #   UTL: REQ_MAX - abs(min(residual))
-            corr_low = float(PA_POWER_LUT_255_REQ_MIN) + abs(residual_max)
-            corr_high = float(PA_POWER_LUT_255_REQ_MAX) - abs(residual_min)
-            method = "requirements+abs(max(resid))/ -abs(min(resid)) (PA LUT 255)"
+            if is_be:
+                corr_low = float(PA_POWER_LUT_255_REQ_MIN)
+                corr_high = float(PA_POWER_LUT_255_REQ_MAX)
+                method = "REQ_MIN/REQ_MAX (BE, PA LUT 255)"
+            else:
+                #   LTL: REQ_MIN + abs(min(residual))
+                #   UTL: REQ_MAX - abs(max(residual))
+                corr_low = float(PA_POWER_LUT_255_REQ_MIN) + abs(residual_min)
+                corr_high = float(PA_POWER_LUT_255_REQ_MAX) - abs(residual_max)
+                method = "REQ_MIN + abs(residual_min); REQ_MAX - abs(residual_max) (PA LUT 255)"
 
     # Default: mean ± 6σ on correlated distribution
     if math.isnan(corr_low) or math.isnan(corr_high):
@@ -513,7 +536,7 @@ if __name__ == "__main__":
             desired_cols=list(
                 dict.fromkeys(
                     MERGE_KEYS
-                    + [CV_VALUE_COL, ATE_VALUE_COL, ATE_LOW_COL, ATE_HIGH_COL, ATE_UNIT_COL, LO_IDAC_COL, "LUT value"]
+                    + [CV_VALUE_COL, ATE_VALUE_COL, ATE_LOW_COL, ATE_HIGH_COL, ATE_UNIT_COL, LO_IDAC_COL, "LUT value", INSERTION_TYPE_COL]
                 )
             ),
         )
@@ -533,6 +556,8 @@ if __name__ == "__main__":
             keep.append(doe_split_col)
         if LO_IDAC_COL in df.columns:
             keep.append(LO_IDAC_COL)
+        if INSERTION_TYPE_COL in df.columns:
+            keep.append(INSERTION_TYPE_COL)
         keep = [c for c in keep if c in df.columns]
         merged_local = df[keep].copy()
 
@@ -553,6 +578,8 @@ if __name__ == "__main__":
             rename_map[doe_split_col] = "DoE split"
         if LO_IDAC_COL in merged_local.columns:
             rename_map[LO_IDAC_COL] = LO_IDAC_COL
+        if INSERTION_TYPE_COL in merged_local.columns:
+            rename_map[INSERTION_TYPE_COL] = INSERTION_TYPE_COL
         merged_local = merged_local.rename(columns=rename_map)
         merged_local = _ensure_lut_value_column(merged_local)
 
@@ -566,11 +593,11 @@ if __name__ == "__main__":
 
         cv_df = _remap_columns_best_effort(
             cv_df,
-            desired_cols=list(dict.fromkeys(MERGE_KEYS + [CV_VALUE_COL, ATE_LOW_COL, ATE_HIGH_COL, ATE_UNIT_COL, LO_IDAC_COL, "LUT value"])),
+            desired_cols=list(dict.fromkeys(MERGE_KEYS + [CV_VALUE_COL, ATE_LOW_COL, ATE_HIGH_COL, ATE_UNIT_COL, LO_IDAC_COL, "LUT value", INSERTION_TYPE_COL])),
         )
         ate_df = _remap_columns_best_effort(
             ate_df,
-            desired_cols=list(dict.fromkeys(MERGE_KEYS + [ATE_VALUE_COL, LO_IDAC_COL, "LUT value"])),
+            desired_cols=list(dict.fromkeys(MERGE_KEYS + [ATE_VALUE_COL, LO_IDAC_COL, "LUT value", INSERTION_TYPE_COL])),
         )
 
         test_name_cv = _find_test_name_column(list(cv_df.columns))
@@ -606,6 +633,12 @@ if __name__ == "__main__":
             cv_keep.append(LO_IDAC_COL)
         if LO_IDAC_COL in ate_df.columns:
             ate_keep.append(LO_IDAC_COL)
+
+        # Insertion Type column (keep if present)
+        if INSERTION_TYPE_COL in cv_df.columns:
+            cv_keep.append(INSERTION_TYPE_COL)
+        if INSERTION_TYPE_COL in ate_df.columns:
+            ate_keep.append(INSERTION_TYPE_COL)
 
         cv_df = cv_df[cv_keep].copy()
         ate_df = ate_df[ate_keep].copy()
@@ -676,6 +709,13 @@ if __name__ == "__main__":
                 merged_local = merged_local.rename(columns={f"{LO_IDAC_COL}_CV": LO_IDAC_COL})
             elif f"{LO_IDAC_COL}_ATE" in merged_local.columns:
                 merged_local = merged_local.rename(columns={f"{LO_IDAC_COL}_ATE": LO_IDAC_COL})
+
+        # Normalize/choose a single Insertion Type column if present
+        if INSERTION_TYPE_COL not in merged_local.columns:
+            if f"{INSERTION_TYPE_COL}_CV" in merged_local.columns:
+                merged_local = merged_local.rename(columns={f"{INSERTION_TYPE_COL}_CV": INSERTION_TYPE_COL})
+            elif f"{INSERTION_TYPE_COL}_ATE" in merged_local.columns:
+                merged_local = merged_local.rename(columns={f"{INSERTION_TYPE_COL}_ATE": INSERTION_TYPE_COL})
 
         if LO_IDAC_COL in merged_local.columns:
             merged_local[LO_IDAC_COL] = pd.to_numeric(merged_local[LO_IDAC_COL], errors="coerce").astype("Int64")
@@ -815,8 +855,12 @@ if __name__ == "__main__":
             # New limits (requested):
             # - default: mean(ATE_correlated) ± 6σ(ATE_correlated)
             # - special cases:
-            #     TXLO max LO power (IDAC 112): requirements ± max|residual|
-            #     TXPA max PA power (LUT 255): requirements ± max|residual|
+            #     TXLO max LO power (IDAC 112):
+            #       - BE insertion: REQ_MIN, REQ_MAX
+            #       - else: REQ_MIN + abs(residual_min), REQ_MAX - abs(residual_max)
+            #     TXPA max PA power (LUT 255):
+            #       - BE insertion: REQ_MIN, REQ_MAX
+            #       - else: REQ_MIN + abs(residual_min), REQ_MAX - abs(residual_max)
             inferred_mode = "TXPA" if "LUT value" in group_cols else "TXLO"
             group_dict = dict(zip(group_cols, group_key if isinstance(group_key, tuple) else (group_key,)))
             limits = _compute_new_limits(
@@ -824,6 +868,7 @@ if __name__ == "__main__":
                 group_cols=group_cols,
                 group_dict=group_dict,
                 g=g,
+                sheet_label=sheet_label,
             )
             corr_low = limits["Corr_Low"]
             corr_high = limits["Corr_High"]
@@ -834,6 +879,7 @@ if __name__ == "__main__":
                 group_cols=group_cols,
                 group_dict=group_dict,
                 g=g,
+                sheet_label=sheet_label,
                 corr_col="ATE_correlated_Physics",
                 residual_col="Residual_Physics",
             )
@@ -1181,12 +1227,12 @@ if __name__ == "__main__":
             ax_corr.legend(fontsize=10, framealpha=0.92)
 
             note_dist = (
-                f"Offset limits: Method={limits['Limit_Method']}  μ_corr={limits['CorrMean']:.4g}  σ_corr={limits['CorrStd']:.4g}"
+                f"Offset limits: Method={limits['Limit_Method']}"
             )
-            if not math.isnan(limits["MaxAbsResidual"]):
-                note_dist += f"  max|res|={limits['MaxAbsResidual']:.4g}"
-            if not math.isnan(alpha) and not math.isnan(beta):
-                note_dist += f"  |  Physics: alpha={alpha:.4g} beta={beta:.4g}  R²={r2_phys:.3f}"
+            #if not math.isnan(limits["MaxAbsResidual"]):
+                #note_dist += f"  max|res|={limits['MaxAbsResidual']:.4g}"
+            #if not math.isnan(alpha) and not math.isnan(beta):
+                #note_dist += f"  |  Physics: alpha={alpha:.4g} beta={beta:.4g}  R²={r2_phys:.3f}"
             if corr_window_invalid:
                 note_dist += "  [INVALID LIMIT WINDOW]"
             ax_corr.text(
