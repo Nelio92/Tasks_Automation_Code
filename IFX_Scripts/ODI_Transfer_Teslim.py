@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import csv
+import re
 from typing import Iterable, Optional
 from openpyxl import load_workbook
 
@@ -40,13 +41,16 @@ class OdiImportConfig:
 	odi_source: str = ""  # e.g. "ATE", "INS_OFF"
 	test_variants: str = ""  # comma-separated variants (e.g. "8188")
 
+	# Behavior
+	include_zero_odi: bool = False  # default exports only non-zero values
+
 
 CONFIG = OdiImportConfig(
 	# Reference workbook (the repo contains CTRX8188A_TE_TX.xlsx)
 	reference_xlsx=Path(__file__).resolve().parents[2] / "CTRX8188A_TE_TX.xlsx",
 
 	# Output file to generate
-	output_csv=Path(__file__).resolve().parents[2] / "ODI_FE_Test_CS_Workaround_2.csv",
+	output_csv=Path(__file__).resolve().parents[2] / "ODIs_TX.csv",
 
 	# Optional filters (examples):
 	# modules={"DPLL", "TXGE"},
@@ -54,12 +58,12 @@ CONFIG = OdiImportConfig(
 	#modules=None, 
 	#odi_columns=None,
     #modules={"TXGE","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS"},
-	#odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2"},
-	modules={"TXPA","TXPB","TXPC","TXPD"},
-	odi_columns={"ODI LTL S1"},
+	#odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
+	modules={"TXGE"},
+	odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
 	# Output metadata
-	comment="Workaround to remove some ODIs because of current Teslim issues 2",
-	jira_tasks="RSIPPTE-493",
+	comment="ODI values for the Test-D release",
+	jira_tasks="RSIPPTE-492",
 	odi_source="INS_OFF",
 	test_variants="8188",
 )
@@ -91,6 +95,17 @@ class GenerationResult:
 
 def _normalize_header(value: str) -> str:
 	return " ".join(value.strip().split()).casefold()
+
+
+def _find_test_number_idx(headers: list[str]) -> Optional[int]:
+	# Be tolerant: workbooks sometimes vary the header text slightly.
+	candidates = {"test number", "testnumber", "test_number"}
+	for idx, header in enumerate(headers):
+		if not header:
+			continue
+		if _normalize_header(header) in candidates:
+			return idx
+	return None
 
 
 def _is_nonzero(value: object) -> bool:
@@ -133,7 +148,30 @@ def _format_s_value(value: float) -> str:
 	return format(value, ".15g")
 
 
-def _extract_scope_and_insertion(odi_header: str) -> tuple[str, str]:
+
+_INSERTION_TOKEN_RE = re.compile(r"^[A-Za-z]{1,3}\d{1,2}$")
+
+
+def _parse_insertion_tokens(odi_header: str) -> list[str]:
+	# Extract tokens like S1, S2, B1, Q3 even if punctuation is attached.
+	# Also supports combined tokens like "B1/B2" or "B1,B2".
+	tokens = [t.strip(" ,;()[]{}\t\n\r") for t in odi_header.strip().split()]
+	insertions: list[str] = []
+	for token in tokens:
+		if not token:
+			continue
+		# Split combined forms.
+		parts = re.split(r"[,/;+&]", token)
+		for part in parts:
+			p = part.strip(" ,;()[]{}\t\n\r").upper()
+			if not p:
+				continue
+			if _INSERTION_TOKEN_RE.match(p):
+				insertions.append(p)
+	return insertions
+
+
+def _extract_scope_and_insertions(odi_header: str) -> tuple[str, tuple[str, ...]]:
 	normalized = _normalize_header(odi_header)
 	if "ltl" in normalized:
 		scope = "LowerLimit"
@@ -144,12 +182,22 @@ def _extract_scope_and_insertion(odi_header: str) -> tuple[str, str]:
 			f"ODI column header must contain LTL or UTL to derive scope: {odi_header!r}"
 		)
 
-	# Last token is the insertion name (S1, S2, B1, ...)
-	tokens = odi_header.strip().split()
-	if not tokens:
-		raise ValueError("Empty ODI header")
-	insertion = tokens[-1]
-	return scope, insertion
+	insertions = _parse_insertion_tokens(odi_header)
+	if not insertions:
+		# Backwards-compatible fallback: last token.
+		tokens = odi_header.strip().split()
+		if not tokens:
+			raise ValueError("Empty ODI header")
+		insertions = [tokens[-1].strip(" ,;()[]{}\t\n\r").upper()]
+
+	# De-duplicate while preserving a stable order.
+	seen: set[str] = set()
+	ordered: list[str] = []
+	for ins in insertions:
+		if ins not in seen:
+			seen.add(ins)
+			ordered.append(ins)
+	return scope, tuple(ordered)
 
 
 def _iter_target_sheets(sheetnames: Iterable[str]) -> list[str]:
@@ -189,10 +237,24 @@ def generate_odi_csv(config: OdiImportConfig) -> GenerationResult:
 		else {_normalize_header(c) for c in config.odi_columns}
 	)
 
+	# Also support semantic selection: match by (scope, insertion) even if the sheet header
+	# contains extra tokens (e.g. "ODI LTL Q1 (new)") and wouldn't be an exact match.
+	requested_scope_insertion: Optional[set[tuple[str, str]]] = None
+	if config.odi_columns is not None:
+		requested_scope_insertion = set()
+		for c in config.odi_columns:
+			try:
+				scope, insertions = _extract_scope_and_insertions(c)
+			except Exception:
+				continue
+			for ins in insertions:
+				requested_scope_insertion.add((scope, ins))
+
 	# Group rows when multiple insertions have same TestNumber + scope + S value
 	# (Example ODI_Test.csv groups B1,B2 for the same value)
 	grouped: dict[tuple[int, str, float], set[str]] = {}
 	processed_sheets: list[str] = []
+	seen_odi_headers_norm: set[str] = set()
 
 	for sheet_name in sheetnames:
 		module = sheet_name.split("_", 1)[1]
@@ -208,20 +270,31 @@ def generate_odi_csv(config: OdiImportConfig) -> GenerationResult:
 
 		headers_str = [h if isinstance(h, str) else "" for h in header_row]
 
-		try:
-			test_number_idx = headers_str.index("Test Number")
-		except ValueError:
+		test_number_idx = _find_test_number_idx(headers_str)
+		if test_number_idx is None:
 			continue
 
 		odi_cols: list[tuple[int, str]] = []  # (0-based index, header)
 		for idx, header in enumerate(headers_str):
 			if not header:
 				continue
-			if not header.strip().startswith("ODI"):
+			if not _normalize_header(header).startswith("odi"):
 				continue
 			if normalized_selected_odi_cols is not None:
-				if _normalize_header(header) not in normalized_selected_odi_cols:
-					continue
+				norm = _normalize_header(header)
+				seen_odi_headers_norm.add(norm)
+				if norm not in normalized_selected_odi_cols:
+					# Fallback semantic match
+					if requested_scope_insertion is None:
+						continue
+					try:
+						scope, insertions = _extract_scope_and_insertions(header)
+					except Exception:
+						continue
+					if not any((scope, ins) in requested_scope_insertion for ins in insertions):
+						continue
+			else:
+				seen_odi_headers_norm.add(_normalize_header(header))
 			odi_cols.append((idx, header))
 
 		if not odi_cols:
@@ -250,16 +323,16 @@ def generate_odi_csv(config: OdiImportConfig) -> GenerationResult:
 				if col_idx >= len(row):
 					continue
 				odi_value = row[col_idx]
-				if not _is_nonzero(odi_value):
+				if not config.include_zero_odi and not _is_nonzero(odi_value):
 					continue
 
-				scope, insertion = _extract_scope_and_insertion(header)
+				scope, insertions = _extract_scope_and_insertions(header)
 				s_value = _normalize_s_value(_to_float(odi_value))
 				if abs(s_value) <= 1e-12:
 					continue
 
 				key = (test_number_int, scope, s_value)
-				grouped.setdefault(key, set()).add(insertion)
+				grouped.setdefault(key, set()).update(insertions)
 
 	rows = []
 	for (test_number, scope, s_value), insertions in grouped.items():
@@ -300,6 +373,34 @@ def main() -> None:
 	print(f"Generated ODI CSV: {result.output_csv}")
 	print(f"Rows written: {result.row_count}")
 	print(f"Sheets processed: {len(result.processed_sheets)}")
+
+	# Extra diagnostics for common "missing ODI" cases.
+	if CONFIG.odi_columns is not None:
+		# Note: this checks whether requested ODI column headers exist in the workbook.
+		# If formulas have no cached results, headers may exist but values will still be empty.
+		requested = {_normalize_header(c) for c in CONFIG.odi_columns}
+		# Re-load a tiny bit of metadata to get actual headers found (cheap even for big XLSX)
+		try:
+			wb = load_workbook(CONFIG.reference_xlsx, data_only=True, read_only=True)
+			found: set[str] = set()
+			for sheet_name in _iter_target_sheets(wb.sheetnames):
+				ws = wb[sheet_name]
+				header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+				if not header_row:
+					continue
+				for h in header_row:
+					if isinstance(h, str) and _normalize_header(h).startswith("odi"):
+						found.add(_normalize_header(h))
+			missing = sorted(requested - found)
+			if missing:
+				print(
+					"WARNING: Some requested ODI column headers were not found in the workbook.\n"
+					"Check exact spelling/spacing in the Excel header row. Missing headers (normalized):\n"
+					+ "\n".join(f"- {m}" for m in missing)
+				)
+		except Exception:
+			# Diagnostics must never block generation.
+			pass
 
 	if result.row_count == 0:
 		selected_modules = "ALL" if result.selected_modules is None else ", ".join(result.selected_modules)

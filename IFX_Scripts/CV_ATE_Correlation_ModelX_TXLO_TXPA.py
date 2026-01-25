@@ -37,15 +37,15 @@ import pandas as pd
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_PA_Power_Data_DoE.xlsx")
-OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_BE.xlsx")  # can also be a folder path
-OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_BE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
+OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXPA_Power_FE.xlsx")  # can also be a folder path
+OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_PA_Power_FE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
 #INPUT_XLSX = str(_REPO_ROOT / "ATE_Extracted_LO_Power_Data.xlsx")
 #OUTPUT_XLSX = str(_REPO_ROOT / "CV_ATE_Correlation_TXLO_Power_FE.xlsx")  # can also be a folder path
 #OUTPUT_PLOTS_DIR = str(_REPO_ROOT / "plots_LO_Power_FE")  # optional; if empty uses OUTPUT_XLSX folder + "plots"
 
 # If you want to process multiple same-layout sheets (CV+ATE columns in each sheet), list them here.
 # When non-empty, this overrides CV_SHEET/ATE_SHEET and runs each sheet independently.
-SHEETS_TO_RUN = ["BE_Filtered"]
+SHEETS_TO_RUN = ["FE_Filtered"]
 CV_SHEET = r""  # used when SHEETS_TO_RUN is empty
 ATE_SHEET = r""  # used when SHEETS_TO_RUN is empty
 # Columns that identify the same device/test row in both sheets.
@@ -65,7 +65,7 @@ MERGE_KEYS = [
 CV_VALUE_COL = "CV_PA_Power"    # in-sheet CV values
 ATE_VALUE_COL = "ATE_PA_Power"  # in-sheet ATE values
 # Physics-based model input (Kf)
-KF_SHEET = "KF_BE"  # new input parameter
+KF_SHEET = "KF_FE"  # new input parameter
 KF_VALUE_COL = "Test Value"
 # Use the individual Kf values as measured in the KF sheet.
 # Even if Kf is expected to be supply/frequency independent, the source sheet
@@ -97,7 +97,7 @@ PLOT_DPI = 160
 # LO and PA power REQUIREMENTS
 LO_POWER_IDAC_112_REQ_MIN = 9  # dBm
 LO_POWER_IDAC_112_REQ_MAX = 16   # dBm
-PA_POWER_LUT_255_REQ_MIN = 10.3  # dBm
+PA_POWER_LUT_255_REQ_MIN = 10  # dBm
 PA_POWER_LUT_255_REQ_MAX = 16   # dBm
 
 # =========================
