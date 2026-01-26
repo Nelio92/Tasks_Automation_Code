@@ -19,9 +19,9 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 # <<<<<<<<<<<<<<< PLEASE CONFIGURE THESE PATHS >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/Test_Q_PCK/'
 # OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/Test_Q_PCK/'
-DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/RSIPPTE-393'
-OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/RSIPPTE-393/'
-OUTPUT_FOLDER_PLOTS_TX_POWER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_CS/RSIPPTE-393/Plots_TX_Power'
+DATA_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_D'
+OUTPUT_FOLDER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_D'
+OUTPUT_FOLDER_PLOTS_TX_POWER = 'C:/UserData/Infineon/TE_CTRX/CTRX8188/Data_Reviews/BE_Test_D/Plots_TX_Power'
 # <<<<<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 DATA_ANALYSIS_EXCEL_REPORT_NAME = 'Yield_Cpk_Correlation_report.xlsx'
@@ -29,7 +29,7 @@ PDF_REPORT_NAME = 'tx_power_overview.pdf'
 #HEATMAPS_FOLDER = 'correlation_heatmaps'
 PERFORM_YIELD_CPK_ANALYSES = True
 PERFORM_TX_CORRELATION_ANALYSES = True
-PERFORM_TX_POWER_PLOTTING = True
+PERFORM_TX_POWER_PLOTTING = False
 
 # --- 2. Test Module Definitions -----------------------------------------------------------------------------------------------------------------------------
 TEST_MODULES = {
