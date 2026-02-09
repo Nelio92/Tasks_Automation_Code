@@ -221,7 +221,15 @@ def _read_prod_csv_chip_matrix(path: Path, *, tests_needed: set[int] | None = No
 
     def _as_int_str(series: pd.Series) -> pd.Series:
         s2 = pd.to_numeric(series, errors="coerce")
-        return s2.map(lambda v: "" if pd.isna(v) else str(int(v)))
+        if s2 is None or s2.empty:
+            return pd.Series(["" for _ in range(len(series))], index=series.index)
+
+        mask = s2.notna()
+        out = pd.Series(["" for _ in range(len(s2))], index=s2.index, dtype=object)
+        if mask.any():
+            # Use Int64 to safely handle large numbers and missing values.
+            out.loc[mask] = s2.loc[mask].astype("Int64").astype(str)
+        return out
 
     parts = []
     if lot_col is not None:
