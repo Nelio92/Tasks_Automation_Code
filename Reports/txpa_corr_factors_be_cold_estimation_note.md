@@ -27,6 +27,11 @@ The analysis exports three formatted Excel workbooks (auto-fit column widths):
 - `Tasks_Automation_Code/Reports/txpa_corr_factors_be_group_summary.xlsx`
   - Grouped summary by (Voltage corner, Frequency_GHz, PA Channel).
 
+Plots:
+
+- `Tasks_Automation_Code/Reports/txpa_corr_factors_be_models_per_testcase.pdf`
+  - One page per test case: measured points at 25°C/135°C plus the three model curves, and temperature-specific subplots (-40°C, 25°C, 135°C).
+
 ## Definitions
 
 Let:
@@ -111,4 +116,8 @@ If such cases are critical to product performance, the best remedy is to measure
 Run:
 
 `C:/UserData/Learning/Software_Programming/GitHub_Nelio92/.venv/Scripts/python.exe Tasks_Automation_Code/Reports/generate_txpa_corr_factors_be_cold_estimates_xlsx.py`
+
+To regenerate the plots PDF:
+
+`C:/UserData/Learning/Software_Programming/GitHub_Nelio92/.venv/Scripts/python.exe Tasks_Automation_Code/Reports/generate_txpa_corr_factors_be_model_plots.py`
 
