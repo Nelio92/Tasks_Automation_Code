@@ -663,6 +663,215 @@ def _cdf_plot_png(
     plt.close(fig)
 
 
+def _prepare_wafer_map_frame(values, *, meta_cols):
+    import pandas as pd
+    import numpy as np
+
+    if meta_cols is None:
+        return None, None, None, None
+    if not all(c in getattr(meta_cols, "columns", []) for c in ("X", "Y")):
+        return None, None, None, None
+
+    v = pd.to_numeric(values, errors="coerce")
+    x = pd.to_numeric(meta_cols["X"], errors="coerce")
+    y = pd.to_numeric(meta_cols["Y"], errors="coerce")
+    wafer = _normalize_wafer_ids(meta_cols["WAFER"]) if "WAFER" in meta_cols.columns else None
+
+    df = pd.DataFrame({"v": v, "X": x, "Y": y})
+    if wafer is not None:
+        df["WAFER"] = wafer
+    for optional_col in ("CHIP_ID", "SITE_NUM", "PF", "FIRST_FAIL_TEST"):
+        if optional_col in getattr(meta_cols, "columns", []):
+            df[optional_col] = meta_cols[optional_col]
+
+    df = df.dropna(subset=["v", "X", "Y"]).copy()
+    if df.empty:
+        return None, None, None, None
+
+    if "WAFER" in df.columns and df["WAFER"].notna().any():
+        counts = df.dropna(subset=["WAFER"]).groupby("WAFER")["v"].size().sort_values(ascending=False)
+        wafers = [str(w) for w in counts.index.tolist()]
+    else:
+        wafers = ["ALL"]
+        df["WAFER"] = "ALL"
+
+    wafers = wafers[:6]
+    all_v = df["v"].to_numpy(dtype=float)
+    vmin = float(np.nanpercentile(all_v, 1))
+    vmax = float(np.nanpercentile(all_v, 99))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+        vmin = float(np.nanmin(df["v"]))
+        vmax = float(np.nanmax(df["v"]))
+
+    return df, wafers, vmin, vmax
+
+
+def _wafer_map_html(
+    values,
+    *,
+    meta_cols,
+    title: str,
+    out_path: Path,
+    low_limit: float | None = None,
+    high_limit: float | None = None,
+) -> None:
+    """Create an interactive wafer map HTML with hover details for each chip."""
+    import numpy as np
+
+    df, wafers, vmin, vmax = _prepare_wafer_map_frame(values, meta_cols=meta_cols)
+    if df is None or wafers is None:
+        return
+
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except Exception:
+        return
+
+    low = -np.inf if low_limit is None else float(low_limit)
+    high = np.inf if high_limit is None else float(high_limit)
+
+    n = len(wafers)
+    ncols = 3 if n >= 3 else n
+    nrows = int(math.ceil(n / max(1, ncols)))
+    subplot_titles: list[str] = []
+    wafer_frames: list[tuple[str, Any]] = []
+    for w in wafers:
+        d = df[df["WAFER"].astype(str) == str(w)].copy()
+        wafer_frames.append((str(w), d))
+        vv = d["v"].to_numpy(dtype=float)
+        fails = (vv < low) | (vv > high)
+        subplot_titles.append(f"WAFER={w}  N={len(vv)}  fails={int(np.count_nonzero(fails))}")
+
+    fig = make_subplots(rows=nrows, cols=ncols, subplot_titles=subplot_titles)
+    showscale_remaining = True
+
+    for idx, (w, d) in enumerate(wafer_frames, start=1):
+        row = (idx - 1) // ncols + 1
+        col = (idx - 1) % ncols + 1
+        xv = d["X"].to_numpy(dtype=float)
+        yv = d["Y"].to_numpy(dtype=float)
+        vv = d["v"].to_numpy(dtype=float)
+        fails = (vv < low) | (vv > high)
+
+        x_min = float(np.nanmin(xv))
+        x_max = float(np.nanmax(xv))
+        y_min = float(np.nanmin(yv))
+        y_max = float(np.nanmax(yv))
+        if x_min == x_max:
+            x_min -= 0.5
+            x_max += 0.5
+        if y_min == y_max:
+            y_min -= 0.5
+            y_max += 0.5
+
+        point_count = max(1, len(vv))
+        marker_size = float(min(42.0, max(12.0, 300.0 / math.sqrt(point_count))))
+        chip_id_series = d["CHIP_ID"].astype(str) if "CHIP_ID" in d.columns else None
+        site_series = d["SITE_NUM"].astype(str) if "SITE_NUM" in d.columns else None
+
+        hover_text = []
+        for i in range(len(d)):
+            chip_line = ""
+            if chip_id_series is not None and chip_id_series.iloc[i] not in {"", "<NA>", "nan", "None"}:
+                chip_line = f"<br>Chip ID={chip_id_series.iloc[i]}"
+            site_line = ""
+            if site_series is not None and site_series.iloc[i] not in {"", "<NA>", "nan", "None"}:
+                site_line = f"<br>Site={site_series.iloc[i]}"
+            hover_text.append(
+                "<br>".join(
+                    [
+                        f"Wafer={w}",
+                        f"X={_fmt_num(float(xv[i]))}",
+                        f"Y={_fmt_num(float(yv[i]))}",
+                        f"Value={_fmt_num(float(vv[i]))}",
+                        f"Status={'FAIL' if bool(fails[i]) else 'PASS'}",
+                    ]
+                )
+                + chip_line
+                + site_line
+            )
+
+        fig.add_trace(
+            go.Scatter(
+                x=xv,
+                y=yv,
+                mode="markers",
+                text=hover_text,
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+                marker={
+                    "symbol": "square",
+                    "size": marker_size,
+                    "color": vv,
+                    "colorscale": "Turbo",
+                    "cmin": vmin,
+                    "cmax": vmax,
+                    "line": {"color": "#2F2F2F", "width": 0.8},
+                    "colorbar": {"title": "Value"},
+                    "showscale": showscale_remaining,
+                },
+            ),
+            row=row,
+            col=col,
+        )
+        showscale_remaining = False
+
+        if np.any(fails):
+            fig.add_trace(
+                go.Scatter(
+                    x=xv[fails],
+                    y=yv[fails],
+                    mode="markers",
+                    hoverinfo="skip",
+                    showlegend=False,
+                    marker={
+                        "symbol": "square-open",
+                        "size": marker_size + 6,
+                        "color": "#D62728",
+                        "line": {"color": "#D62728", "width": 2.0},
+                    },
+                ),
+                row=row,
+                col=col,
+            )
+
+        xref = f"x{idx}" if idx > 1 else "x"
+        yref = f"y{idx}" if idx > 1 else "y"
+        fig.add_shape(
+            type="circle",
+            xref=xref,
+            yref=yref,
+            x0=x_min,
+            x1=x_max,
+            y0=y_min,
+            y1=y_max,
+            line={"color": "#666666", "width": 1.5},
+        )
+        fig.update_xaxes(range=[x_min, x_max], showgrid=True, gridcolor="rgba(0,0,0,0.12)", row=row, col=col)
+        fig.update_yaxes(
+            range=[y_min, y_max],
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.12)",
+            scaleratio=1,
+            scaleanchor=xref,
+            row=row,
+            col=col,
+        )
+
+    fig.update_layout(
+        title={"text": title, "x": 0.5},
+        template="plotly_white",
+        dragmode="zoom",
+        hovermode="closest",
+        width=max(1200, 480 * ncols),
+        height=max(700, 420 * nrows),
+        margin={"l": 40, "r": 40, "t": 90, "b": 40},
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(out_path, include_plotlyjs=True, full_html=True, auto_open=False)
+
+
 def _wafer_map_png(
     values,
     *,
@@ -1139,6 +1348,7 @@ def generate_yield_cpk_report(
     import pandas as pd
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.formatting.rule import ColorScaleRule
     from openpyxl.styles import Font, PatternFill
 
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -1345,6 +1555,15 @@ def generate_yield_cpk_report(
                 low_limit=low,
                 high_limit=high,
             )
+            wafer_map_html_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.html"
+            _wafer_map_html(
+                numeric,
+                meta_cols=meta_cols_df,
+                title=f"{test_name} ({test_col}) | {temp_label}",
+                out_path=wafer_map_html_path,
+                low_limit=low,
+                high_limit=high,
+            )
 
             # Write to plots sheet.
             ws_plots[f"A{plot_anchor_row}"] = f"{test_col} {test_name}"
@@ -1360,12 +1579,14 @@ def generate_yield_cpk_report(
                 plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(plot_uri)
 
             wafer_link = ws_plots[f"C{plot_anchor_row}"]
-            wafer_link.value = "Open wafer PNG"
-            if wafer_map_path.exists():
-                wafer_uri = wafer_map_path.resolve().as_uri()
+            wafer_link.value = "Open interactive wafer map"
+            wafer_click_path = wafer_map_html_path if wafer_map_html_path.exists() else wafer_map_path
+            if wafer_click_path.exists():
+                wafer_uri = wafer_click_path.resolve().as_uri()
                 wafer_link.hyperlink = wafer_uri
                 wafer_link.font = Font(color="0000EE", underline="single")
-                plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_uri)
+            else:
+                wafer_uri = None
             cdf_anchor_cell = f"B{plot_anchor_row + 1}"
             wafer_anchor_cell = f"K{plot_anchor_row + 1}"
             if plot_path.exists():
@@ -1379,6 +1600,8 @@ def generate_yield_cpk_report(
                 wimg.width = 520
                 wimg.height = 360
                 ws_plots.add_image(wimg, wafer_anchor_cell)
+                if wafer_uri is not None:
+                    plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_uri)
             # Reserve some rows for the image.
             plot_link_target = f"#{_excel_internal_sheet_ref(ws_plots.title)}!{cdf_anchor_cell}"
             plot_anchor_row += 30
@@ -1421,6 +1644,22 @@ def generate_yield_cpk_report(
             wb.remove(ws)
             wb.remove(ws_plots)
             continue
+
+        fail_chips_col_idx = headers.index("Fail Chips") + 1
+        fail_chips_col_letter = _excel_col_letter(fail_chips_col_idx)
+        fail_chips_range = f"{fail_chips_col_letter}2:{fail_chips_col_letter}{1 + out_rows}"
+        ws.conditional_formatting.add(
+            fail_chips_range,
+            ColorScaleRule(
+                start_type="min",
+                start_color="63BE7B",
+                mid_type="percentile",
+                mid_value=50,
+                mid_color="FFEB84",
+                end_type="max",
+                end_color="F8696B",
+            ),
+        )
 
         # Apply module block coloring on the data sheet.
         _apply_module_group_row_colors(ws)

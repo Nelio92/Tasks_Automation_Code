@@ -76,6 +76,8 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
 
             png_files = list((output_dir / "cdf_plots").rglob("*.png"))
             self.assertGreaterEqual(len(png_files), 2, "Expected CDF and wafer map PNG outputs")
+            html_files = list((output_dir / "cdf_plots").rglob("*.html"))
+            self.assertGreaterEqual(len(html_files), 1, "Expected interactive wafer map HTML output")
 
             workbook = load_workbook(yield_report, read_only=True, data_only=True)
             try:
@@ -97,6 +99,18 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             finally:
                 workbook.close()
 
+            workbook_with_formatting = load_workbook(yield_report, read_only=False, data_only=False)
+            try:
+                worksheet_with_formatting = workbook_with_formatting[SAMPLE_SHEET_NAME]
+                cf_rules = list(worksheet_with_formatting.conditional_formatting)
+                self.assertTrue(cf_rules, "Expected conditional formatting rules in yield workbook")
+                self.assertTrue(
+                    any(str(rule.sqref) in {"I2", "I2:I2"} for rule in cf_rules),
+                    "Expected Fail Chips conditional formatting on column I",
+                )
+            finally:
+                workbook_with_formatting.close()
+
             with zipfile.ZipFile(yield_report, "r") as zf:
                 drawing_xml_names = [name for name in zf.namelist() if name.startswith("xl/drawings/drawing") and name.endswith(".xml")]
                 drawing_rels_names = [
@@ -117,6 +131,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
 
                 self.assertGreaterEqual(len(click_targets), 2, "Expected clickable hyperlinks for embedded plots")
                 self.assertTrue(any(target.endswith(".png") for target in click_targets))
+                self.assertTrue(any(target.endswith(".html") for target in click_targets))
 
                 click_count = 0
                 for drawing_name in drawing_xml_names:
