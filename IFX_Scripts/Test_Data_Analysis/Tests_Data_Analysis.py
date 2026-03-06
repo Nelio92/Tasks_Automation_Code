@@ -38,39 +38,94 @@ DEFAULT_ENCODING = "latin1"
 DELIMITER = ";"
 
 
-# ================================
-# USER PARAMETERS (edit here)
-# ================================
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# ================================================
+# INJECTED BY YAML LAUNCHER - DO NOT EDIT MANUALLY
+# ================================================
+# These values are intentionally populated by `run_tests_data_analysis.py`
+# from a YAML config file before `run()` is called.
 
 # Input/Output
-INPUT_FOLDER: Path = Path(r"C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data")
-OUTPUT_FOLDER: Path = Path(r"C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data/Outputs")
+INPUT_FOLDER: Path | None = None
+OUTPUT_FOLDER: Path | None = None
 
 # Which modules to analyze (first 4 chars of test name)
-MODULES: list[str] = ["TXGE","TXVC","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS","TXLK"]
+MODULES: list[str] = []
 
 # Thresholds
-YIELD_THRESHOLD: float = 100.0
-CPK_LOW: float = 1.67
-CPK_HIGH: float = 20.0
+YIELD_THRESHOLD: float | None = None
+CPK_LOW: float | None = None
+CPK_HIGH: float | None = None
 
 # Outlier detection (|x-median| > OUTLIER_MAD_MULTIPLIER * MAD)
-OUTLIER_MAD_MULTIPLIER: float = 6.0
+OUTLIER_MAD_MULTIPLIER: float | None = None
 
 # Optional controls
-MAX_FILES: int | None = None  # e.g. 1 for quick test
-SINGLE_FILE: str | None = None  # e.g. "...csv" to process one file
-ENCODING: str = DEFAULT_ENCODING
+MAX_FILES: int | None = None
+SINGLE_FILE: str | None = None
+ENCODING: str | None = None
 
 # Optional correlation workbook
-GENERATE_CORRELATION_REPORT: bool = False
-CORRELATION_METHODS: list[Literal["pearson", "spearman"]] = ["pearson", "spearman"]
-PEARSON_ABS_MIN_FOR_REPORT: float = 0.8
+GENERATE_CORRELATION_REPORT: bool | None = None
+CORRELATION_METHODS: list[Literal["pearson", "spearman"]] = []
+PEARSON_ABS_MIN_FOR_REPORT: float | None = None
 
 # Wafer map display controls
 # Scales the *area* of the wafer outline circle; 2.0 => 2× area, 3.0 => 3× area.
-WAFERMAP_CIRCLE_AREA_MULT: float = 1.0
+WAFERMAP_CIRCLE_AREA_MULT: float | None = None
+
+
+def _require_runtime_configuration() -> dict[str, Any]:
+    missing: list[str] = []
+
+    if INPUT_FOLDER is None:
+        missing.append("INPUT_FOLDER")
+    if OUTPUT_FOLDER is None:
+        missing.append("OUTPUT_FOLDER")
+    if not MODULES:
+        missing.append("MODULES")
+    if YIELD_THRESHOLD is None:
+        missing.append("YIELD_THRESHOLD")
+    if CPK_LOW is None:
+        missing.append("CPK_LOW")
+    if CPK_HIGH is None:
+        missing.append("CPK_HIGH")
+    if OUTLIER_MAD_MULTIPLIER is None:
+        missing.append("OUTLIER_MAD_MULTIPLIER")
+    if ENCODING is None:
+        missing.append("ENCODING")
+    if GENERATE_CORRELATION_REPORT is None:
+        missing.append("GENERATE_CORRELATION_REPORT")
+    if PEARSON_ABS_MIN_FOR_REPORT is None:
+        missing.append("PEARSON_ABS_MIN_FOR_REPORT")
+    if WAFERMAP_CIRCLE_AREA_MULT is None:
+        missing.append("WAFERMAP_CIRCLE_AREA_MULT")
+    if GENERATE_CORRELATION_REPORT and not CORRELATION_METHODS:
+        missing.append("CORRELATION_METHODS")
+
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(
+            "Tests_Data_Analysis runtime configuration is missing. "
+            "Run via run_tests_data_analysis.py with a YAML config file. "
+            f"Missing: {joined}"
+        )
+
+    return {
+        "input_folder": _as_path(INPUT_FOLDER),
+        "output_folder": _as_path(OUTPUT_FOLDER),
+        "modules": list(MODULES),
+        "yield_threshold": float(YIELD_THRESHOLD),
+        "cpk_low": float(CPK_LOW),
+        "cpk_high": float(CPK_HIGH),
+        "outlier_mad_multiplier": float(OUTLIER_MAD_MULTIPLIER),
+        "max_files": MAX_FILES,
+        "single_file": SINGLE_FILE,
+        "encoding": str(ENCODING),
+        "generate_correlation_report": bool(GENERATE_CORRELATION_REPORT),
+        "correlation_methods": list(CORRELATION_METHODS),
+        "pearson_abs_min_for_report": float(PEARSON_ABS_MIN_FOR_REPORT),
+        "wafermap_circle_area_mult": float(WAFERMAP_CIRCLE_AREA_MULT),
+    }
 
 
 def _as_path(value: str | os.PathLike[str] | Path) -> Path:
@@ -1358,39 +1413,43 @@ def _safe_corr_against_all(df, target_col: str) -> dict[str, float | None]:
 
 
 def run() -> int:
-    """Run analysis using the USER PARAMETERS at the top of this file."""
-    input_folder = _as_path(INPUT_FOLDER)
-    output_folder = _as_path(OUTPUT_FOLDER)
+    """Run analysis using runtime configuration supplied by the YAML wrapper."""
+    config = _require_runtime_configuration()
+    input_folder = config["input_folder"]
+    output_folder = config["output_folder"]
 
     output_folder.mkdir(parents=True, exist_ok=True)
 
     generate_yield_cpk_report(
         input_folder=input_folder,
         output_folder=output_folder,
-        modules=MODULES,
-        outlier_mad_multiplier=OUTLIER_MAD_MULTIPLIER,
-        yield_threshold=YIELD_THRESHOLD,
-        cpk_low=CPK_LOW,
-        cpk_high=CPK_HIGH,
-        max_files=MAX_FILES,
-        single_file=SINGLE_FILE,
-        encoding=ENCODING,
+        modules=config["modules"],
+        outlier_mad_multiplier=config["outlier_mad_multiplier"],
+        yield_threshold=config["yield_threshold"],
+        cpk_low=config["cpk_low"],
+        cpk_high=config["cpk_high"],
+        max_files=config["max_files"],
+        single_file=config["single_file"],
+        encoding=config["encoding"],
     )
 
-    if GENERATE_CORRELATION_REPORT:
+    if config["generate_correlation_report"]:
         generate_correlation_workbook(
             input_folder=input_folder,
             output_folder=output_folder,
-            modules=MODULES,
-            max_files=MAX_FILES,
-            single_file=SINGLE_FILE,
-            methods=CORRELATION_METHODS,
-            pearson_abs_min_for_report=PEARSON_ABS_MIN_FOR_REPORT,
-            encoding=ENCODING,
+            modules=config["modules"],
+            max_files=config["max_files"],
+            single_file=config["single_file"],
+            methods=config["correlation_methods"],
+            pearson_abs_min_for_report=config["pearson_abs_min_for_report"],
+            encoding=config["encoding"],
         )
 
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(run())
+    raise SystemExit(
+        "Direct execution of Tests_Data_Analysis.py is disabled. "
+        "Use run_tests_data_analysis.py --config <yaml> or run_tests_data_analysis.ps1."
+    )

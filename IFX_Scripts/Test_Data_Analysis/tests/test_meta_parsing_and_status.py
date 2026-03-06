@@ -7,15 +7,14 @@ import unittest
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-IFX_SCRIPTS_DIR = REPO_ROOT / "Tasks_Automation_Code" / "IFX_Scripts"
-if str(IFX_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(IFX_SCRIPTS_DIR))
+TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
+if str(TEST_DATA_ANALYSIS_DIR) not in sys.path:
+    sys.path.insert(0, str(TEST_DATA_ANALYSIS_DIR))
 
 import Tests_Data_Analysis as analysis
 
 
-SAMPLE_INPUT = IFX_SCRIPTS_DIR / "tests" / "smoke_input" / "smoke_Q2_sample.csv"
+SAMPLE_INPUT = TEST_DATA_ANALYSIS_DIR / "tests" / "smoke_input" / "smoke_Q2_sample.csv"
 
 
 class MetaParsingUnitTests(unittest.TestCase):

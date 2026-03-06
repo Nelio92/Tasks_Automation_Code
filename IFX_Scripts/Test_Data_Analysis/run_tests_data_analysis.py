@@ -6,6 +6,9 @@ from typing import Any
 import Tests_Data_Analysis as analysis
 
 
+TEST_DATA_ANALYSIS_ROOT = Path(__file__).resolve().parent
+
+
 ALLOWED_CORRELATION_METHODS = {"pearson", "spearman"}
 REQUIRED_CONFIG_KEYS = {"input_folder", "output_folder", "modules"}
 OPTIONAL_CONFIG_KEYS = {
@@ -26,6 +29,35 @@ ALLOWED_CONFIG_KEYS = REQUIRED_CONFIG_KEYS | OPTIONAL_CONFIG_KEYS
 
 class ConfigValidationError(ValueError):
     """Raised when a YAML configuration file fails schema validation."""
+
+
+def _resolve_from_test_data_analysis_root(path_value: str | Path) -> Path:
+    candidate = path_value if isinstance(path_value, Path) else Path(path_value)
+    if candidate.is_absolute():
+        return candidate
+
+    first_part = candidate.parts[0] if candidate.parts else ""
+    search_roots = (TEST_DATA_ANALYSIS_ROOT, *TEST_DATA_ANALYSIS_ROOT.parents)
+    for base in search_roots:
+        resolved = (base / candidate).resolve()
+        anchor = (base / first_part) if first_part else resolved
+        if resolved.exists() or anchor.exists():
+            return resolved
+
+    return (TEST_DATA_ANALYSIS_ROOT / candidate).resolve()
+
+
+def _resolve_config_path(config_arg: Path) -> Path:
+    candidates = [config_arg]
+    if not config_arg.is_absolute():
+        candidates.append(TEST_DATA_ANALYSIS_ROOT / config_arg)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+
+    return candidates[-1].resolve()
 
 
 def _format_config_errors(errors: list[str]) -> str:
@@ -65,7 +97,8 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
 
     input_folder = normalized.get("input_folder")
     if isinstance(input_folder, str):
-        input_path = Path(input_folder)
+        input_path = _resolve_from_test_data_analysis_root(input_folder)
+        normalized["input_folder"] = input_path
         if not input_path.exists():
             errors.append(f"input_folder does not exist: {input_path}")
         elif not input_path.is_dir():
@@ -73,7 +106,8 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
 
     output_folder = normalized.get("output_folder")
     if isinstance(output_folder, str):
-        output_path = Path(output_folder)
+        output_path = _resolve_from_test_data_analysis_root(output_folder)
+        normalized["output_folder"] = output_path
         output_parent = output_path.parent if output_path.parent != Path("") else Path(".")
         if not output_parent.exists():
             errors.append(f"output_folder parent directory does not exist: {output_parent}")
@@ -264,7 +298,7 @@ def main() -> int:
     parser = _build_argument_parser()
     args = parser.parse_args()
 
-    config_path = args.config.resolve()
+    config_path = _resolve_config_path(args.config)
     config = _load_config(config_path)
     _apply_config(config)
 

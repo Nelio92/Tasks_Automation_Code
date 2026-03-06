@@ -88,35 +88,31 @@ Main parameters:
 Install dependencies:
 
 ```powershell
-pip install -r Tasks_Automation_Code/IFX_Scripts/requirements-tests-data-analysis.txt
+pip install -r Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/requirements-tests-data-analysis.txt
 ```
 
-Run:
+Run only through the YAML launcher. Direct execution of `Tests_Data_Analysis.py` is intentionally disabled.
 
-```powershell
-python Tasks_Automation_Code/IFX_Scripts/Tests_Data_Analysis.py
-```
-
-The script exits with code `0` when successful.
+Note: all runtime settings are now owned by the YAML config files. `run_tests_data_analysis.py` loads the selected YAML profile and applies those values before `Tests_Data_Analysis.py` runs.
 
 ### Team runner (recommended)
 
 Use the deployment launcher with YAML configuration:
 
 ```powershell
-./Tasks_Automation_Code/IFX_Scripts/run_tests_data_analysis.ps1
+./Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/run_tests_data_analysis.ps1
 ```
 
 Use a specific profile:
 
 ```powershell
-./Tasks_Automation_Code/IFX_Scripts/run_tests_data_analysis.ps1 -ConfigPath Tasks_Automation_Code/IFX_Scripts/configs/config_txpa_focus.yaml
+./Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/run_tests_data_analysis.ps1 -ConfigPath Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/configs/config_txpa_focus.yaml
 ```
 
 Dry run of resolved parameters:
 
 ```powershell
-.venv/Scripts/python.exe Tasks_Automation_Code/IFX_Scripts/run_tests_data_analysis.py --config Tasks_Automation_Code/IFX_Scripts/configs/config_default.yaml --dry-run
+.venv/Scripts/python.exe Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/run_tests_data_analysis.py --config Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/configs/config_default.yaml --dry-run
 ```
 
 ---
@@ -213,14 +209,17 @@ For your current environment, option 1 is the shortest path to reliable team ado
 ```text
 Tasks_Automation_Code/
   IFX_Scripts/
-    Tests_Data_Analysis.py
-    Tests_Data_Analysis_User_Guide.md
-    requirements-tests-data-analysis.txt
-    run_tests_data_analysis.py
-    run_tests_data_analysis.ps1
-    configs/
-      config_default.yaml
-      config_txpa_focus.yaml
+    Test_Data_Analysis/
+      Tests_Data_Analysis.py
+      Tests_Data_Analysis_User_Guide.md
+      requirements-tests-data-analysis.txt
+      run_tests_data_analysis.py
+      run_tests_data_analysis.ps1
+      configs/
+        config_default.yaml
+        config_txpa_focus.yaml
+      tests/
+        ...
 ```
 
 ---
@@ -251,7 +250,7 @@ Tasks_Automation_Code/
 Run the smoke test locally from repository root:
 
 ```text
-python -m unittest discover -s Tasks_Automation_Code/IFX_Scripts/tests -p "test_*.py" -v
+python -m unittest discover -s Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/tests -p "test_*.py" -v
 ```
 
 What it validates:
@@ -292,7 +291,7 @@ What it validates:
 
 ## 12) Quick start for engineers
 
-1. Select a profile in `Tasks_Automation_Code/IFX_Scripts/configs`.
+1. Select a profile in `Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/configs`.
 2. (Optional) set `single_file` in the selected YAML for first validation run.
 3. Run `run_tests_data_analysis.ps1`.
 4. Open `Yield_Cpk_Report.xlsx` in output folder.

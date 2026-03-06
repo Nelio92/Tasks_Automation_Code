@@ -10,9 +10,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-IFX_SCRIPTS_DIR = REPO_ROOT / "Tasks_Automation_Code" / "IFX_Scripts"
-SAMPLE_INPUT_DIR = IFX_SCRIPTS_DIR / "tests" / "smoke_input"
+TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
+SAMPLE_INPUT_DIR = TEST_DATA_ANALYSIS_DIR / "tests" / "smoke_input"
 SAMPLE_FILE_NAME = "smoke_Q2_sample.csv"
 SAMPLE_SHEET_NAME = "smoke_Q2_sample"
 SAMPLE_PLOTS_SHEET_NAME = "smoke_Q2_sample_PLOTS"
@@ -52,7 +51,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, "run_tests_data_analysis.py", "--config", str(config_path)],
-                cwd=IFX_SCRIPTS_DIR,
+                cwd=TEST_DATA_ANALYSIS_DIR,
                 capture_output=True,
                 text=True,
                 check=False,

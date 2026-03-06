@@ -1,5 +1,5 @@
-input_folder: C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data
-output_folder: C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data/Outputs
+input_folder: PROD_Data
+output_folder: PROD_Data/Outputs
 modules:
   - TXGE
   - TXVC
