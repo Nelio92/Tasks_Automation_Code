@@ -6,6 +6,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 
 TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
 if str(TEST_DATA_ANALYSIS_DIR) not in sys.path:
@@ -132,6 +134,43 @@ class StatusLogicUnitTests(unittest.TestCase):
             )
         )
 
+
+class CorrelationHelperUnitTests(unittest.TestCase):
+    def test_safe_spearman_correlation_does_not_require_scipy(self) -> None:
+        a = pd.Series([10, 20, 30, 40, 50], dtype=float)
+        b = pd.Series([1, 2, 3, 4, 5], dtype=float)
+        c = pd.Series([5, 4, 3, 2, 1], dtype=float)
+
+        self.assertAlmostEqual(float(analysis._safe_spearman_correlation(a, b)), 1.0, places=12)
+        self.assertAlmostEqual(float(analysis._safe_spearman_correlation(a, c)), -1.0, places=12)
+        self.assertIsNone(analysis._safe_spearman_correlation(pd.Series([1.0]), pd.Series([2.0])))
+
+class WaferNormalizationUnitTests(unittest.TestCase):
+    def test_normalize_wafer_ids_extracts_numeric_values(self) -> None:
+        normalized = analysis._normalize_wafer_ids(
+            pd.Series(["WafNr=24", "24", "Wafer 007", "nan", "", "ABC", None])
+        )
+
+        self.assertEqual(normalized.iloc[0], "24")
+        self.assertEqual(normalized.iloc[1], "24")
+        self.assertEqual(normalized.iloc[2], "7")
+        self.assertTrue(pd.isna(normalized.iloc[3]))
+        self.assertTrue(pd.isna(normalized.iloc[4]))
+        self.assertTrue(pd.isna(normalized.iloc[5]))
+        self.assertTrue(pd.isna(normalized.iloc[6]))
+
+
+class SheetNameUnitTests(unittest.TestCase):
+    def test_unique_sheet_name_handles_truncation_collisions(self) -> None:
+        base = "3FT6Y120R04_024_S11P_20260210192844_M5358ACSH1D3311_RBGEUFRF22"
+        other = base + "_2"
+
+        first = analysis._unique_sheet_name(base, [])
+        second = analysis._unique_sheet_name(other, [first])
+
+        self.assertLessEqual(len(first), 31)
+        self.assertLessEqual(len(second), 31)
+        self.assertNotEqual(first.lower(), second.lower())
 
 if __name__ == "__main__":
     unittest.main()

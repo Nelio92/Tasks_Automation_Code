@@ -15,7 +15,7 @@ Outputs:
 - One Excel workbook containing one sheet per input file with only the tests of
   interest that have yield < 100% or Cpk outside thresholds.
 - A per-input-file plots sheet embedding CDF plots; hyperlinks in the data sheet
-  jump to the embedded plot.
+    jump to the embedded plot, and clicking an embedded plot opens the full PNG.
 - Optionally, a separate correlation workbook (one sheet per input file)
   computing Pearson and Spearman correlations for each module test vs all tests.
 
@@ -29,9 +29,11 @@ import csv
 import math
 import os
 import re
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal
+from xml.etree import ElementTree as ET
 
 
 DEFAULT_ENCODING = "latin1"
@@ -151,6 +153,22 @@ def _safe_sheet_name(name: str) -> str:
     return safe[:31]
 
 
+def _unique_sheet_name(name: str, existing_names) -> str:
+    """Return an Excel-safe unique sheet name capped at 31 characters."""
+    base = _safe_sheet_name(name)
+    existing_lower = {str(item).lower() for item in existing_names}
+    if base.lower() not in existing_lower:
+        return base
+
+    counter = 2
+    while True:
+        suffix = f"_{counter}"
+        candidate = f"{base[:31 - len(suffix)]}{suffix}".strip() or f"Sheet{suffix}"
+        if candidate.lower() not in existing_lower:
+            return candidate
+        counter += 1
+
+
 def _excel_internal_sheet_ref(sheet_name: str) -> str:
     """Return a sheet reference safe for internal Excel hyperlinks.
 
@@ -211,6 +229,173 @@ def _self_check_workbook_internal_hyperlinks(workbook) -> list[str]:
                     )
 
     return issues
+
+
+def _normalize_ooxml_path(path: str) -> str:
+    parts: list[str] = []
+    for part in PurePosixPath(path).parts:
+        if part in ("", ".", "/", "\\"):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _resolve_ooxml_target(source_part: str, target: str) -> str:
+    return _normalize_ooxml_path(str(PurePosixPath(source_part).parent / target))
+
+
+def _rels_part_for(part_path: str) -> str:
+    part = PurePosixPath(part_path)
+    return str(part.parent / "_rels" / f"{part.name}.rels")
+
+
+def _next_relationship_id(rels_root: ET.Element) -> str:
+    used: set[int] = set()
+    for rel in rels_root:
+        rid = rel.attrib.get("Id", "")
+        m = re.fullmatch(r"rId(\d+)", rid)
+        if m:
+            used.add(int(m.group(1)))
+
+    next_id = 1
+    while next_id in used:
+        next_id += 1
+    return f"rId{next_id}"
+
+
+def _enable_clickable_plot_images(workbook_path: Path, sheet_image_targets: dict[str, list[str]]) -> None:
+    """Patch workbook drawings so clicking an embedded plot opens the PNG file."""
+    if not sheet_image_targets:
+        return
+
+    ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ns_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns_pkg = "http://schemas.openxmlformats.org/package/2006/relationships"
+    ns_xdr = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+    ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    drawing_rel_type = f"{ns_rel}/drawing"
+    hyperlink_rel_type = f"{ns_rel}/hyperlink"
+
+    ET.register_namespace("", ns_main)
+    ET.register_namespace("r", ns_rel)
+    ET.register_namespace("xdr", ns_xdr)
+    ET.register_namespace("a", ns_a)
+
+    with zipfile.ZipFile(workbook_path, "r") as zin:
+        archive = {name: zin.read(name) for name in zin.namelist()}
+
+    workbook_part = "xl/workbook.xml"
+    workbook_rels_part = "xl/_rels/workbook.xml.rels"
+    if workbook_part not in archive or workbook_rels_part not in archive:
+        return
+
+    workbook_root = ET.fromstring(archive[workbook_part])
+    workbook_rels_root = ET.fromstring(archive[workbook_rels_part])
+    workbook_rels_by_id = {
+        rel.attrib.get("Id"): rel for rel in workbook_rels_root.findall(f"{{{ns_pkg}}}Relationship")
+    }
+
+    sheet_part_by_name: dict[str, str] = {}
+    for sheet in workbook_root.findall(f".//{{{ns_main}}}sheet"):
+        name = sheet.attrib.get("name")
+        rel_id = sheet.attrib.get(f"{{{ns_rel}}}id")
+        rel = workbook_rels_by_id.get(rel_id)
+        if not name or rel is None:
+            continue
+        target = rel.attrib.get("Target")
+        if not target:
+            continue
+        sheet_part_by_name[name] = _resolve_ooxml_target(workbook_part, target)
+
+    modified: dict[str, bytes] = {}
+    for sheet_name, image_targets in sheet_image_targets.items():
+        if not image_targets:
+            continue
+
+        sheet_part = sheet_part_by_name.get(sheet_name)
+        if not sheet_part:
+            continue
+        sheet_rels_part = _rels_part_for(sheet_part)
+        if sheet_rels_part not in archive:
+            continue
+
+        sheet_rels_root = ET.fromstring(archive[sheet_rels_part])
+        drawing_target = None
+        for rel in sheet_rels_root.findall(f"{{{ns_pkg}}}Relationship"):
+            if rel.attrib.get("Type") == drawing_rel_type:
+                drawing_target = rel.attrib.get("Target")
+                break
+        if not drawing_target:
+            continue
+
+        drawing_part = _resolve_ooxml_target(sheet_part, drawing_target)
+        drawing_rels_part = _rels_part_for(drawing_part)
+        if drawing_part not in archive or drawing_rels_part not in archive:
+            continue
+
+        drawing_root = ET.fromstring(archive[drawing_part])
+        drawing_rels_root = ET.fromstring(archive[drawing_rels_part])
+
+        pic_anchors: list[ET.Element] = []
+        for anchor_tag in ("oneCellAnchor", "twoCellAnchor", "absoluteAnchor"):
+            for anchor in drawing_root.findall(f"{{{ns_xdr}}}{anchor_tag}"):
+                if anchor.find(f"{{{ns_xdr}}}pic") is not None:
+                    pic_anchors.append(anchor)
+
+        changed = False
+        for target_uri, anchor in zip(image_targets, pic_anchors, strict=False):
+            pic = anchor.find(f"{{{ns_xdr}}}pic")
+            if pic is None:
+                continue
+            nv_pic = pic.find(f"{{{ns_xdr}}}nvPicPr")
+            if nv_pic is None:
+                continue
+            c_nv_pr = nv_pic.find(f"{{{ns_xdr}}}cNvPr")
+            if c_nv_pr is None:
+                continue
+
+            for child in list(c_nv_pr):
+                if child.tag == f"{{{ns_a}}}hlinkClick":
+                    c_nv_pr.remove(child)
+
+            rel_id = _next_relationship_id(drawing_rels_root)
+            ET.SubElement(
+                drawing_rels_root,
+                f"{{{ns_pkg}}}Relationship",
+                {
+                    "Id": rel_id,
+                    "Type": hyperlink_rel_type,
+                    "Target": target_uri,
+                    "TargetMode": "External",
+                },
+            )
+            ET.SubElement(
+                c_nv_pr,
+                f"{{{ns_a}}}hlinkClick",
+                {
+                    f"{{{ns_rel}}}id": rel_id,
+                    "tooltip": "Open full-size PNG",
+                },
+            )
+            changed = True
+
+        if changed:
+            modified[drawing_part] = ET.tostring(drawing_root, encoding="utf-8", xml_declaration=True)
+            modified[drawing_rels_part] = ET.tostring(drawing_rels_root, encoding="utf-8", xml_declaration=True)
+
+    if not modified:
+        return
+
+    temp_path = workbook_path.with_suffix(workbook_path.suffix + ".tmp")
+    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for name, data in archive.items():
+            zout.writestr(name, modified.get(name, data))
+
+    temp_path.replace(workbook_path)
 
 
 def _autofit_openpyxl_columns(ws, *, min_width: int = 8, max_width: int = 70, padding: int = 2) -> None:
@@ -504,25 +689,20 @@ def _wafer_map_png(
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.patches import Circle
+        from matplotlib.patches import Ellipse
         import matplotlib.colors as mcolors
     except Exception:
         return
 
     import warnings
 
-    area_mult = float(WAFERMAP_CIRCLE_AREA_MULT) if "WAFERMAP_CIRCLE_AREA_MULT" in globals() else 3.0
-    if not np.isfinite(area_mult) or area_mult <= 0:
-        area_mult = 3.0
-
     v = pd.to_numeric(values, errors="coerce")
     x = pd.to_numeric(meta_cols["X"], errors="coerce")
     y = pd.to_numeric(meta_cols["Y"], errors="coerce")
-    wafer = meta_cols["WAFER"].astype("string").str.strip() if "WAFER" in meta_cols.columns else None
+    wafer = _normalize_wafer_ids(meta_cols["WAFER"]) if "WAFER" in meta_cols.columns else None
 
     df = pd.DataFrame({"v": v, "X": x, "Y": y})
     if wafer is not None:
-        wafer = wafer.mask(wafer.eq("") | wafer.str.lower().eq("nan"))
         df["WAFER"] = wafer
 
     df = df.dropna(subset=["v", "X", "Y"]).copy()
@@ -555,19 +735,20 @@ def _wafer_map_png(
         cmap = plt.get_cmap("viridis")
 
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+    wafermap_scale = 3.0
 
     n = len(wafers)
     ncols = 3 if n >= 3 else n
     nrows = int(math.ceil(n / max(1, ncols)))
-    fig_w = 7.0
-    fig_h = 4.2 if n <= 2 else 4.8
+    fig_w = (10.0 if n <= 2 else 12.5) * wafermap_scale
+    fig_h = (6.8 if n <= 2 else max(7.0, 4.8 * nrows)) * wafermap_scale
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=140)
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
     axes = axes.ravel()
 
     # Reserve a right margin for the colorbar so it never covers the wafer maps.
-    fig.subplots_adjust(left=0.07, right=0.84, bottom=0.10, top=0.86, wspace=0.25, hspace=0.35)
+    fig.subplots_adjust(left=0.06, right=0.86, bottom=0.08, top=0.90, wspace=0.18, hspace=0.28)
 
     low = -np.inf if low_limit is None else float(low_limit)
     high = np.inf if high_limit is None else float(high_limit)
@@ -586,16 +767,22 @@ def _wafer_map_png(
         fails = (vv < low) | (vv > high)
         n_fail = int(np.count_nonzero(fails))
 
+        point_count = max(1, len(vv))
+        base_chip_marker_size = float(min(165.0, max(55.0, 2200.0 / math.sqrt(point_count))))
+        chip_marker_size = base_chip_marker_size * wafermap_scale
+        fail_marker_size = chip_marker_size * 1.8
+
         sc = ax.scatter(
             xv,
             yv,
             c=vv,
             cmap=cmap,
             norm=norm,
-            s=18,
+            s=chip_marker_size,
             marker="s",
-            linewidths=0,
-            alpha=0.95,
+            linewidths=0.20 * wafermap_scale,
+            edgecolors="#2F2F2F",
+            alpha=0.98,
         )
         mappable = sc
 
@@ -605,23 +792,46 @@ def _wafer_map_png(
                 yv[fails],
                 facecolors="none",
                 edgecolors="#D62728",
-                linewidths=1.2,
-                s=65,
+                linewidths=1.6 * wafermap_scale,
+                s=fail_marker_size,
                 marker="s",
                 label=f"fails={n_fail}",
             )
 
-        # Simple wafer outline (circle around the die cloud).
-        cx = float(np.mean(xv))
-        cy = float(np.mean(yv))
-        base_r = float(np.max(np.sqrt((xv - cx) ** 2 + (yv - cy) ** 2))) + 0.8
-        r = base_r * float(math.sqrt(area_mult))
-        ax.add_patch(Circle((cx, cy), r, fill=False, color="#666666", linewidth=0.8, alpha=0.8))
+        # Wafer outline based on the visible chip coordinate envelope.
+        x_min = float(np.nanmin(xv))
+        x_max = float(np.nanmax(xv))
+        y_min = float(np.nanmin(yv))
+        y_max = float(np.nanmax(yv))
 
-        ax.set_title(f"WAFER={w}  N={len(vv)}  fails={n_fail}", fontsize=9)
+        if x_min == x_max:
+            x_min -= 0.5
+            x_max += 0.5
+        if y_min == y_max:
+            y_min -= 0.5
+            y_max += 0.5
+
+        cx = 0.5 * (x_min + x_max)
+        cy = 0.5 * (y_min + y_max)
+        ax.add_patch(
+            Ellipse(
+                (cx, cy),
+                width=(x_max - x_min),
+                height=(y_max - y_min),
+                fill=False,
+                color="#666666",
+                linewidth=0.8 * wafermap_scale,
+                alpha=0.8,
+            )
+        )
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+
+        ax.set_title(f"WAFER={w}  N={len(vv)}  fails={n_fail}", fontsize=10 * wafermap_scale)
         ax.set_aspect("equal", adjustable="box")
-        ax.grid(True, alpha=0.15)
-        ax.tick_params(labelsize=8)
+        ax.grid(True, alpha=0.12)
+        ax.tick_params(labelsize=9 * wafermap_scale)
 
     # Hide any unused axes.
     for ax in axes[len(wafers) :]:
@@ -631,10 +841,10 @@ def _wafer_map_png(
         # Dedicated axis for colorbar (no overlap with subplot area).
         cax = fig.add_axes([0.87, 0.18, 0.03, 0.62])
         cbar = fig.colorbar(mappable, cax=cax)
-        cbar.ax.tick_params(labelsize=8)
-        cbar.set_label("Value", fontsize=9)
+        cbar.ax.tick_params(labelsize=8 * wafermap_scale)
+        cbar.set_label("Value", fontsize=9 * wafermap_scale)
 
-    fig.suptitle(title, fontsize=10)
+    fig.suptitle(title, fontsize=10 * wafermap_scale)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, format="png")
     plt.close(fig)
@@ -662,13 +872,22 @@ def _parse_insertion_temperature_label(file_name: str) -> str:
 def _fmt_num(x: float) -> str:
     return f"{float(x):.6g}"
 
+def _normalize_wafer_ids(values):
+    """Extract numeric wafer identifiers from mixed WAFER labels."""
+    import pandas as pd
+
+    series = pd.Series(values, copy=False).astype("string").str.strip()
+    series = series.mask(series.eq("") | series.str.lower().eq("nan"))
+    extracted = series.str.extract(r"(\d+)", expand=False)
+    numeric = pd.to_numeric(extracted, errors="coerce")
+    normalized = numeric.astype("Int64").astype("string")
+    return normalized.mask(normalized.isna())
 
 def _fmt_1dp(x: float) -> str:
     return f"{float(x):.1f}"
 
 
 def _build_plot_title(
-    *,
     test_name: str,
     test_col: str,
     temp_label: str,
@@ -781,10 +1000,9 @@ def _build_comment(
         parts.append(f"File wafer signature: {wafer_sig}")
 
     if "WAFER" in meta_cols.columns:
-        df_w = pd.DataFrame({"v": vals, "WAFER": meta_cols["WAFER"].astype(str)})
+        df_w = pd.DataFrame({"v": vals, "WAFER": _normalize_wafer_ids(meta_cols["WAFER"])})
         df_w = df_w.dropna(subset=["v"])  # keep WAFER even if blank
-        wafer_series = df_w["WAFER"].astype("string").str.strip()
-        wafer_series = wafer_series.mask(wafer_series.eq("") | wafer_series.str.lower().eq("nan"))
+        wafer_series = df_w["WAFER"]
         wafers = wafer_series.dropna().unique()
         if wafers.size >= 2:
             med_by_wafer = df_w.dropna(subset=["WAFER"]).groupby("WAFER")["v"].median()
@@ -798,7 +1016,7 @@ def _build_comment(
             coord = pd.to_numeric(meta_cols[axis], errors="coerce")
             df_xy = pd.DataFrame({"v": vals, axis: coord}).dropna()
             if df_xy.shape[0] >= 50:
-                rho = df_xy["v"].corr(df_xy[axis], method="spearman")
+                rho = _safe_spearman_correlation(df_xy["v"], df_xy[axis])
                 if rho is not None and np.isfinite(rho) and abs(float(rho)) >= 0.30:
                     parts.append(f"Coordinate signature: spearman(v,{axis})={float(rho):+.2f}")
 
@@ -921,7 +1139,7 @@ def generate_yield_cpk_report(
     import pandas as pd
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as XLImage
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, PatternFill
 
     output_folder.mkdir(parents=True, exist_ok=True)
     plots_root = output_folder / "cdf_plots"
@@ -943,6 +1161,7 @@ def generate_yield_cpk_report(
     wb = Workbook()
     # Remove default sheet
     wb.remove(wb.active)
+    plot_image_targets_by_sheet: dict[str, list[str]] = {}
 
     for file_path in csv_paths:
         print(f"Processing: {file_path.name}")
@@ -1011,9 +1230,9 @@ def generate_yield_cpk_report(
         meta_cols_df = df_units[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=df_units.index)
 
         # Create sheets.
-        sheet_name = _safe_sheet_name(file_path.stem)
+        sheet_name = _unique_sheet_name(file_path.stem, wb.sheetnames)
         ws = wb.create_sheet(sheet_name)
-        plot_sheet_name = _safe_sheet_name((file_path.stem[:25] + "_PLOTS"))
+        plot_sheet_name = _unique_sheet_name((file_path.stem[:25] + "_PLOTS"), wb.sheetnames)
         ws_plots = wb.create_sheet(plot_sheet_name)
 
         # Tab colors: keep data vs plots tabs distinct.
@@ -1021,7 +1240,6 @@ def generate_yield_cpk_report(
         ws_plots.sheet_properties.tabColor = "C0504D"  # red
 
         headers = [
-            "File",
             "Module",
             "Test Nr",
             "Test Name",
@@ -1032,18 +1250,20 @@ def generate_yield_cpk_report(
             "N",
             "Fail Chips",
             "Outliers",
+            "Comment",
+            "CDF Plot",
             "Original LTL",
             "Original UTL",
             "LTL 6s",
             "UTL 6s",
             "LTL 12s",
             "UTL 12s",
-            "Comment",
-            "CDF Plot",
         ]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
+        status_header_fill = PatternFill(patternType="solid", fgColor="FFF2CC")
+        ws.cell(row=1, column=headers.index("Status") + 1).fill = status_header_fill
 
         ws_plots.append(["Test", "CDF (fails highlighted)", "Wafer map (fails highlighted)"])
         ws_plots["A1"].font = Font(bold=True)
@@ -1134,14 +1354,18 @@ def generate_yield_cpk_report(
             cdf_link = ws_plots[f"B{plot_anchor_row}"]
             cdf_link.value = "Open CDF PNG"
             if plot_path.exists():
-                cdf_link.hyperlink = plot_path.resolve().as_uri()
+                plot_uri = plot_path.resolve().as_uri()
+                cdf_link.hyperlink = plot_uri
                 cdf_link.font = Font(color="0000EE", underline="single")
+                plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(plot_uri)
 
             wafer_link = ws_plots[f"C{plot_anchor_row}"]
             wafer_link.value = "Open wafer PNG"
             if wafer_map_path.exists():
-                wafer_link.hyperlink = wafer_map_path.resolve().as_uri()
+                wafer_uri = wafer_map_path.resolve().as_uri()
+                wafer_link.hyperlink = wafer_uri
                 wafer_link.font = Font(color="0000EE", underline="single")
+                plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_uri)
             cdf_anchor_cell = f"B{plot_anchor_row + 1}"
             wafer_anchor_cell = f"K{plot_anchor_row + 1}"
             if plot_path.exists():
@@ -1161,7 +1385,6 @@ def generate_yield_cpk_report(
 
             # Write row to data sheet.
             row = [
-                file_path.name,
                 module,
                 int(test_col),
                 test_name,
@@ -1172,14 +1395,14 @@ def generate_yield_cpk_report(
                 n,
                 n_fail,
                 n_out,
+                comment,
+                "View",
                 low,
                 high,
                 l6,
                 u6,
                 l12,
                 u12,
-                comment,
-                "View",
             ]
             ws.append(row)
             out_rows += 1
@@ -1221,10 +1444,12 @@ def generate_yield_cpk_report(
 
     try:
         wb.save(out_xlsx)
+        _enable_clickable_plot_images(out_xlsx, plot_image_targets_by_sheet)
     except PermissionError:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         alt = output_folder / f"Yield_Cpk_Report_{ts}.xlsx"
         wb.save(alt)
+        _enable_clickable_plot_images(alt, plot_image_targets_by_sheet)
         print(f"Could not overwrite (file open?): {out_xlsx}")
         print(f"Saved instead: {alt}")
         return alt
@@ -1287,7 +1512,7 @@ def generate_correlation_workbook(
         )
         df = df.apply(pd.to_numeric, errors="coerce")
 
-        sheet = wb.create_sheet(_safe_sheet_name(file_path.stem))
+        sheet = wb.create_sheet(_unique_sheet_name(file_path.stem, wb.sheetnames))
         headers = [
             "Module",
             "Test Nr",
@@ -1399,6 +1624,21 @@ def _safe_pair_correlation(a, b) -> float | None:
     if not np.isfinite(corr):
         return None
     return corr
+
+
+def _safe_spearman_correlation(a, b) -> float | None:
+    """Compute Spearman correlation without requiring SciPy."""
+    import pandas as pd
+
+    aa = pd.to_numeric(a, errors="coerce")
+    bb = pd.to_numeric(b, errors="coerce")
+    valid = aa.notna() & bb.notna()
+    if int(valid.sum()) < 2:
+        return None
+
+    aa_rank = aa[valid].rank(method="average")
+    bb_rank = bb[valid].rank(method="average")
+    return _safe_pair_correlation(aa_rank, bb_rank)
 
 
 def _safe_corr_against_all(df, target_col: str) -> dict[str, float | None]:

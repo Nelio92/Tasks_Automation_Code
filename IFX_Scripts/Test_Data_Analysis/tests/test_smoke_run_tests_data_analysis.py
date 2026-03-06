@@ -5,7 +5,9 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
 
@@ -82,17 +84,46 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 worksheet = workbook[SAMPLE_SHEET_NAME]
                 data_rows = list(worksheet.iter_rows(min_row=2, values_only=True))
                 self.assertEqual(len(data_rows), 1, "Expected exactly one affected test row in the smoke sample")
+                self.assertEqual(worksheet["G1"].value, "Status")
+                self.assertEqual(worksheet["G1"].fill.fgColor.rgb, "00FFF2CC")
 
                 row = data_rows[0]
-                self.assertEqual(row[0], SAMPLE_FILE_NAME)
-                self.assertEqual(row[1], "TXPA")
-                self.assertEqual(row[2], 520123)
-                self.assertEqual(row[3], "TXPA_OUTPUT_PWR")
-                self.assertEqual(row[7], "FAILS")
-                self.assertEqual(row[9], 2)
-                self.assertEqual(row[18], "View")
+                self.assertEqual(row[0], "TXPA")
+                self.assertEqual(row[1], 520123)
+                self.assertEqual(row[2], "TXPA_OUTPUT_PWR")
+                self.assertEqual(row[6], "FAILS")
+                self.assertEqual(row[8], 2)
+                self.assertEqual(row[11], "View")
             finally:
                 workbook.close()
+
+            with zipfile.ZipFile(yield_report, "r") as zf:
+                drawing_xml_names = [name for name in zf.namelist() if name.startswith("xl/drawings/drawing") and name.endswith(".xml")]
+                drawing_rels_names = [
+                    name for name in zf.namelist() if name.startswith("xl/drawings/_rels/drawing") and name.endswith(".xml.rels")
+                ]
+                self.assertTrue(drawing_xml_names, "Expected drawing XML parts in yield workbook")
+                self.assertTrue(drawing_rels_names, "Expected drawing relationship parts in yield workbook")
+
+                drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                package_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+                click_targets: list[str] = []
+                for rel_name in drawing_rels_names:
+                    rel_root = ET.fromstring(zf.read(rel_name))
+                    for rel in rel_root.findall(f"{{{package_ns}}}Relationship"):
+                        if rel.attrib.get("Type", "").endswith("/hyperlink"):
+                            click_targets.append(rel.attrib.get("Target", ""))
+
+                self.assertGreaterEqual(len(click_targets), 2, "Expected clickable hyperlinks for embedded plots")
+                self.assertTrue(any(target.endswith(".png") for target in click_targets))
+
+                click_count = 0
+                for drawing_name in drawing_xml_names:
+                    drawing_root = ET.fromstring(zf.read(drawing_name))
+                    click_count += len(drawing_root.findall(f".//{{{drawing_ns}}}hlinkClick"))
+
+                self.assertGreaterEqual(click_count, 2, "Expected embedded plot images to have click hyperlinks")
 
             corr_workbook = load_workbook(correlation_report, read_only=True, data_only=True)
             try:

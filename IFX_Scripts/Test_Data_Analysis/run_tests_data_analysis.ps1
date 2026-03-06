@@ -1,5 +1,5 @@
 param(
-    [string]$ConfigPath = "",
+    [string]$ConfigPath = "configs/config_default.yaml",
     [switch]$SkipInstall
 )
 
@@ -31,7 +31,16 @@ Set-Location $workspaceRoot
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $scriptRoot "configs/config_default.yaml"
 }
-$ConfigPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $ConfigPath))
+elseif (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $scriptRelativeConfig = Join-Path $scriptRoot $ConfigPath
+    if (Test-Path $scriptRelativeConfig) {
+        $ConfigPath = $scriptRelativeConfig
+    }
+    else {
+        $ConfigPath = Join-Path (Get-Location) $ConfigPath
+    }
+}
+$ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
 
 $venvPython = Join-Path $workspaceRoot ".venv/Scripts/python.exe"
 if (-not (Test-Path $venvPython)) {
