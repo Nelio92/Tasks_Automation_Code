@@ -419,6 +419,19 @@ def _autofit_openpyxl_columns(ws, *, min_width: int = 8, max_width: int = 70, pa
         ws.column_dimensions[_excel_col_letter(col_idx)].width = width
 
 
+def _progress_percent(current: int, total: int) -> int:
+    if total <= 0:
+        return 100
+    bounded = min(max(current, 0), total)
+    return int(round(100.0 * bounded / total))
+
+
+def _print_progress(stage: str, current: int, total: int, detail: str | None = None) -> None:
+    pct = _progress_percent(current, total)
+    suffix = "" if not detail else f" | {detail}"
+    print(f"[{stage}] {pct:3d}% ({current}/{total}){suffix}")
+
+
 def _to_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -1373,7 +1386,9 @@ def generate_yield_cpk_report(
     wb.remove(wb.active)
     plot_image_targets_by_sheet: dict[str, list[str]] = {}
 
-    for file_path in csv_paths:
+    total_files = len(csv_paths)
+    for file_idx, file_path in enumerate(csv_paths, start=1):
+        _print_progress("Yield files", file_idx - 1, total_files, f"starting {file_path.name}")
         print(f"Processing: {file_path.name}")
         meta = scan_flat_file_meta(file_path, encoding=encoding)
         wafer_sig = _parse_filename_wafer_signature(file_path.name)
@@ -1393,6 +1408,7 @@ def generate_yield_cpk_report(
 
         if not interest_cols:
             print(f"  - No tests matched modules {sorted(modules_upper)}; skipping")
+            _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
         # Identify affected tests based on Yield/Cpk thresholds.
@@ -1420,6 +1436,7 @@ def generate_yield_cpk_report(
 
         if not affected:
             print("  - No affected tests (per thresholds); skipping sheet")
+            _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
         # Load only needed columns from unit data.
@@ -1482,7 +1499,14 @@ def generate_yield_cpk_report(
 
         plot_anchor_row = 3
         out_rows = 0
-        for test_col in affected:
+        total_affected = len(affected)
+        for test_idx, test_col in enumerate(affected, start=1):
+            _print_progress(
+                "Yield tests",
+                test_idx - 1,
+                total_affected,
+                f"{file_path.name} | test {test_col}",
+            )
             test_name = interest_names.get(test_col, "")
             module = interest_modules.get(test_col, "")
             low, high, unit = _limits_from_meta(meta, test_col)
@@ -1639,10 +1663,18 @@ def generate_yield_cpk_report(
             link_cell.hyperlink = plot_link_target
             link_cell.font = Font(color="0000EE", underline="single")
 
+            _print_progress(
+                "Yield tests",
+                test_idx,
+                total_affected,
+                f"{file_path.name} | test {test_col}",
+            )
+
         if out_rows == 0:
             # Avoid leaving empty sheets.
             wb.remove(ws)
             wb.remove(ws_plots)
+            _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
         fail_chips_col_idx = headers.index("Fail Chips") + 1
@@ -1671,6 +1703,7 @@ def generate_yield_cpk_report(
         # Freeze header row.
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = f"A1:{_excel_col_letter(ws.max_column)}{ws.max_row}"
+        _print_progress("Yield files", file_idx, total_files, f"finished {file_path.name}")
 
     from datetime import datetime
 
@@ -1731,7 +1764,9 @@ def generate_correlation_workbook(
     excel_max_rows = 1_048_576
     excel_max_data_rows = excel_max_rows - 1  # account for header row
 
-    for file_path in csv_paths:
+    total_files = len(csv_paths)
+    for file_idx, file_path in enumerate(csv_paths, start=1):
+        _print_progress("Corr files", file_idx - 1, total_files, f"starting {file_path.name}")
         print(f"Correlation: {file_path.name}")
         meta = scan_flat_file_meta(file_path, encoding=encoding)
 
@@ -1740,6 +1775,7 @@ def generate_correlation_workbook(
         module_cols = [c for c in meta.numeric_test_cols if module_by_col[c] in modules_upper]
         if not module_cols:
             print("  - No module tests found; skipping")
+            _print_progress("Corr files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
         # Load ALL numeric tests for correlation (optional heavy step).
@@ -1770,7 +1806,14 @@ def generate_correlation_workbook(
 
         out_rows = 0
         truncated = False
-        for test_col in module_cols:
+        total_module_cols = len(module_cols)
+        for test_idx, test_col in enumerate(module_cols, start=1):
+            _print_progress(
+                "Corr tests",
+                test_idx - 1,
+                total_module_cols,
+                f"{file_path.name} | test {test_col}",
+            )
             if out_rows >= excel_max_data_rows:
                 truncated = True
                 break
@@ -1807,16 +1850,25 @@ def generate_correlation_workbook(
                 sheet.append(row)
                 out_rows += 1
 
+            _print_progress(
+                "Corr tests",
+                test_idx,
+                total_module_cols,
+                f"{file_path.name} | test {test_col}",
+            )
+
         if truncated:
             print(f"  - Correlation rows truncated at Excel limit ({excel_max_data_rows} data rows)")
 
         if out_rows == 0:
             wb.remove(sheet)
+            _print_progress("Corr files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = f"A1:{_excel_col_letter(sheet.max_column)}{sheet.max_row}"
         _autofit_openpyxl_columns(sheet)
+        _print_progress("Corr files", file_idx, total_files, f"finished {file_path.name}")
 
     from datetime import datetime
 

@@ -68,6 +68,11 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                     f"STDERR:\n{result.stderr}"
                 ),
             )
+            self.assertIn("[Yield files]", result.stdout)
+            self.assertIn("[Yield tests]", result.stdout)
+            self.assertIn("[Corr files]", result.stdout)
+            self.assertIn("[Corr tests]", result.stdout)
+            self.assertIn("100%", result.stdout)
 
             yield_report = output_dir / "Yield_Cpk_Report.xlsx"
             correlation_report = output_dir / "Correlation_Report.xlsx"
