@@ -1,0 +1,13 @@
+UNIT_ID;SITE_NUM;WAFER;X;Y;LOT;520123;530045
+Test Name;;;;;;TXPA_OUTPUT_PWR;DPLL_LOCK_TIME
+Low;;;;;;9.5;0.0
+High;;;;;;10.5;5.0
+Unit;;;;;;dBm;us
+Cpk;;;;;;1.20;2.10
+Yield;;;;;;95.0;100.0
+Mean;;;;;;10.075;2.5
+Stddev;;;;;;0.68;1.29
+1;0;W1;1;1;LOT_A;9.2;1.0
+2;1;W1;1;2;LOT_A;10.0;2.0
+3;0;W2;2;1;LOT_A;10.3;3.0
+4;1;W2;2;2;LOT_A;10.8;4.0

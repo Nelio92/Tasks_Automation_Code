@@ -1,0 +1,26 @@
+input_folder: C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data
+output_folder: C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data/Outputs
+modules:
+  - TXGE
+  - TXVC
+  - DPLL
+  - TXPA
+  - TXPB
+  - TXPC
+  - TXPD
+  - TXLO
+  - TXPS
+  - TXLK
+yield_threshold: 100.0
+cpk_low: 1.67
+cpk_high: 20.0
+outlier_mad_multiplier: 6.0
+max_files: null
+single_file: null
+encoding: latin1
+generate_correlation_report: false
+correlation_methods:
+  - pearson
+  - spearman
+pearson_abs_min_for_report: 0.8
+wafermap_circle_area_mult: 1.0

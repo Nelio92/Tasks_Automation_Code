@@ -44,11 +44,11 @@ DELIMITER = ";"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Input/Output
-INPUT_FOLDER: Path = Path(r"C:/UserData/Infineon/TE_CTRX/CTRX_8188_8144/Data_Reviews/FE_Test_D")
-OUTPUT_FOLDER: Path = Path(r"C:/UserData/Infineon/TE_CTRX/CTRX_8188_8144/Data_Reviews/FE_Test_D")
+INPUT_FOLDER: Path = Path(r"C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data")
+OUTPUT_FOLDER: Path = Path(r"C:/UserData/Learning/Software_Programming/GitHub_Nelio92/PROD_Data/Outputs")
 
 # Which modules to analyze (first 4 chars of test name)
-MODULES: list[str] = ["TXGE","TXVC","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS"]
+MODULES: list[str] = ["TXGE","TXVC","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS","TXLK"]
 
 # Thresholds
 YIELD_THRESHOLD: float = 100.0
@@ -66,6 +66,7 @@ ENCODING: str = DEFAULT_ENCODING
 # Optional correlation workbook
 GENERATE_CORRELATION_REPORT: bool = False
 CORRELATION_METHODS: list[Literal["pearson", "spearman"]] = ["pearson", "spearman"]
+PEARSON_ABS_MIN_FOR_REPORT: float = 0.8
 
 # Wafer map display controls
 # Scales the *area* of the wafer outline circle; 2.0 => 2× area, 3.0 => 3× area.
@@ -93,6 +94,68 @@ def _safe_sheet_name(name: str) -> str:
     safe = re.sub(r"[\\/*?:\[\]]", "_", name)
     safe = safe.strip() or "Sheet"
     return safe[:31]
+
+
+def _excel_internal_sheet_ref(sheet_name: str) -> str:
+    """Return a sheet reference safe for internal Excel hyperlinks.
+
+    Always quote sheet names to support characters like '-' and spaces.
+    """
+    escaped = sheet_name.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _parse_excel_internal_target(target: str) -> tuple[str | None, str | None]:
+    """Parse internal Excel hyperlink target like #'Sheet Name'!B4."""
+    if not target or not str(target).startswith("#"):
+        return None, None
+
+    body = str(target)[1:]
+    if "!" not in body:
+        return None, None
+
+    raw_sheet, raw_cell = body.split("!", 1)
+    sheet = raw_sheet
+    if len(sheet) >= 2 and sheet[0] == "'" and sheet[-1] == "'":
+        sheet = sheet[1:-1].replace("''", "'")
+    return sheet, raw_cell
+
+
+def _is_valid_excel_a1_ref(cell_ref: str) -> bool:
+    """Return True for basic A1 references/ranges used in internal hyperlinks."""
+    if not cell_ref:
+        return False
+    pattern = r"^\$?[A-Z]{1,3}\$?[1-9][0-9]*(:\$?[A-Z]{1,3}\$?[1-9][0-9]*)?$"
+    return re.match(pattern, str(cell_ref).upper()) is not None
+
+
+def _self_check_workbook_internal_hyperlinks(workbook) -> list[str]:
+    """Validate all internal (#...) hyperlinks in workbook and return issues."""
+    issues: list[str] = []
+    sheet_names = set(workbook.sheetnames)
+
+    for ws in workbook.worksheets:
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                hl = cell.hyperlink
+                if hl is None:
+                    continue
+                target = getattr(hl, "target", None)
+                if target is None or not str(target).startswith("#"):
+                    continue
+
+                sheet_name, cell_ref = _parse_excel_internal_target(str(target))
+                if not sheet_name or sheet_name not in sheet_names:
+                    issues.append(
+                        f"{ws.title}!{cell.coordinate}: invalid target sheet in hyperlink '{target}'"
+                    )
+                    continue
+                if not cell_ref or not _is_valid_excel_a1_ref(cell_ref):
+                    issues.append(
+                        f"{ws.title}!{cell.coordinate}: invalid target cell ref in hyperlink '{target}'"
+                    )
+
+    return issues
 
 
 def _autofit_openpyxl_columns(ws, *, min_width: int = 8, max_width: int = 70, padding: int = 2) -> None:
@@ -280,11 +343,21 @@ def _cdf_plot_png(
         # Plotting is optional; if matplotlib isn't available just skip.
         return
 
-    v = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
-    v = v[np.isfinite(v)]
+    v_raw = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    finite_mask = np.isfinite(v_raw)
+    v = v_raw[finite_mask]
     if v.size == 0:
         return
-    v.sort()
+
+    low = -np.inf if low_limit is None else float(low_limit)
+    high = np.inf if high_limit is None else float(high_limit)
+    has_spec = low_limit is not None or high_limit is not None
+    fail_mask = (v < low) | (v > high) if has_spec else np.zeros(v.size, dtype=bool)
+    n_fail = int(np.count_nonzero(fail_mask))
+
+    order = np.argsort(v)
+    v = v[order]
+    fail_mask = fail_mask[order]
     y = np.arange(1, v.size + 1) / v.size
 
     mean_v = float(np.mean(v))
@@ -292,8 +365,33 @@ def _cdf_plot_png(
 
     fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=140)
 
-    # CDF points (not a continuous line)
-    ax.plot(v, y, linestyle="None", marker=".", markersize=3.0, alpha=0.85, label="Data")
+    # CDF points (not a continuous line), with failing chips highlighted.
+    pass_mask = ~fail_mask
+    if np.any(pass_mask):
+        ax.plot(
+            v[pass_mask],
+            y[pass_mask],
+            linestyle="None",
+            marker=".",
+            markersize=3.0,
+            alpha=0.80,
+            color="#1F77B4",
+            label=f"Pass chips={int(np.count_nonzero(pass_mask))}",
+        )
+    if np.any(fail_mask):
+        ax.plot(
+            v[fail_mask],
+            y[fail_mask],
+            linestyle="None",
+            marker="o",
+            markersize=4.4,
+            alpha=0.95,
+            markerfacecolor="#D62728",
+            markeredgecolor="#D62728",
+            label=f"Fail chips={n_fail}",
+        )
+    elif not np.any(pass_mask):
+        ax.plot(v, y, linestyle="None", marker=".", markersize=3.0, alpha=0.85, label="Data")
 
     # Spec limits (red)
     if low_limit is not None and np.isfinite(low_limit):
@@ -312,7 +410,10 @@ def _cdf_plot_png(
         ax.axvline(float(proposed_u12), color="#9467BD", linestyle=":", linewidth=1.2, label=f"UTL 12s={_fmt_1dp(float(proposed_u12))}")
 
     ax.grid(True, alpha=0.3)
-    ax.set_title(title)
+    if has_spec:
+        ax.set_title(title + f"\nFail chips: {n_fail}/{v.size}")
+    else:
+        ax.set_title(title + f"\nFail chips: N/A (no spec limits)")
     ax.set_xlabel("Value")
     ax.set_ylabel("CDF")
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
@@ -516,11 +617,13 @@ def _build_plot_title(
     test_name: str,
     test_col: str,
     temp_label: str,
+    cpk: float | None,
     mean_v: float,
     median_v: float,
 ) -> str:
     first = f"{test_name} ({test_col}) | {temp_label}"
-    return first + "\n" + f"mean={_fmt_num(mean_v)}; median={_fmt_num(median_v)}"
+    cpk_txt = _fmt_num(float(cpk)) if cpk is not None and math.isfinite(float(cpk)) else "N/A"
+    return first + "\n" + f"Cpk={cpk_txt}; mean={_fmt_num(mean_v)}; median={_fmt_num(median_v)}"
 
 
 def _apply_module_group_row_colors(ws, *, module_col_header: str = "Module", first_data_row: int = 2) -> None:
@@ -872,7 +975,10 @@ def generate_yield_cpk_report(
             "Cpk",
             "Status",
             "N",
+            "Fail Chips",
             "Outliers",
+            "Original LTL",
+            "Original UTL",
             "LTL 6s",
             "UTL 6s",
             "LTL 12s",
@@ -884,7 +990,7 @@ def generate_yield_cpk_report(
         for cell in ws[1]:
             cell.font = Font(bold=True)
 
-        ws_plots.append(["Test", "CDF (embedded)", "Wafer map (fails highlighted)"])
+        ws_plots.append(["Test", "CDF (fails highlighted)", "Wafer map (fails highlighted)"])
         ws_plots["A1"].font = Font(bold=True)
         ws_plots["B1"].font = Font(bold=True)
         ws_plots["C1"].font = Font(bold=True)
@@ -906,6 +1012,13 @@ def generate_yield_cpk_report(
             n = int(finite.size)
             if n == 0:
                 continue
+
+            low_eval = -np.inf if low is None else float(low)
+            high_eval = np.inf if high is None else float(high)
+            if low is None and high is None:
+                n_fail = 0
+            else:
+                n_fail = int(((finite < low_eval) | (finite > high_eval)).sum())
 
             # Outliers
             med = float(np.median(finite))
@@ -932,6 +1045,7 @@ def generate_yield_cpk_report(
                 test_name=test_name,
                 test_col=test_col,
                 temp_label=temp_label,
+                cpk=c,
                 mean_v=float(np.mean(finite)),
                 median_v=float(np.median(finite)),
             )
@@ -948,20 +1062,14 @@ def generate_yield_cpk_report(
             )
 
             wafer_map_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.png"
-            comment_text = str(comment)
-            spatial_signature = (
-                "Wafer signature suspected" in comment_text
-                or "Coordinate signature" in comment_text
+            _wafer_map_png(
+                numeric,
+                meta_cols=meta_cols_df,
+                title=f"{test_name} ({test_col}) | {temp_label}",
+                out_path=wafer_map_path,
+                low_limit=low,
+                high_limit=high,
             )
-            if spatial_signature:
-                _wafer_map_png(
-                    numeric,
-                    meta_cols=meta_cols_df,
-                    title=f"{test_name} ({test_col}) | {temp_label}",
-                    out_path=wafer_map_path,
-                    low_limit=low,
-                    high_limit=high,
-                )
 
             # Write to plots sheet.
             ws_plots[f"A{plot_anchor_row}"] = f"{test_col} {test_name}"
@@ -993,7 +1101,7 @@ def generate_yield_cpk_report(
                 wimg.height = 360
                 ws_plots.add_image(wimg, wafer_anchor_cell)
             # Reserve some rows for the image.
-            plot_link_target = f"#{plot_sheet_name}!{cdf_anchor_cell}"
+            plot_link_target = f"#{_excel_internal_sheet_ref(ws_plots.title)}!{cdf_anchor_cell}"
             plot_anchor_row += 30
 
             # Write row to data sheet.
@@ -1007,7 +1115,10 @@ def generate_yield_cpk_report(
                 c,
                 status,
                 n,
+                n_fail,
                 n_out,
+                low,
+                high,
                 l6,
                 u6,
                 l12,
@@ -1018,7 +1129,6 @@ def generate_yield_cpk_report(
             ws.append(row)
             out_rows += 1
 
-            # Force 1-decimal display for sigma limits in Excel.
             row_idx = 1 + out_rows
             for col_name in ("LTL 6s", "UTL 6s", "LTL 12s", "UTL 12s"):
                 col_idx = headers.index(col_name) + 1
@@ -1048,6 +1158,12 @@ def generate_yield_cpk_report(
     from datetime import datetime
 
     out_xlsx = output_folder / "Yield_Cpk_Report.xlsx"
+    link_issues = _self_check_workbook_internal_hyperlinks(wb)
+    if link_issues:
+        preview = "\n".join(f"- {msg}" for msg in link_issues[:15])
+        more = "" if len(link_issues) <= 15 else f"\n- ... and {len(link_issues) - 15} more"
+        raise ValueError("Internal hyperlink self-check failed:\n" + preview + more)
+
     try:
         wb.save(out_xlsx)
     except PermissionError:
@@ -1070,6 +1186,7 @@ def generate_correlation_workbook(
     max_files: int | None,
     single_file: str | None,
     methods: list[Literal["pearson", "spearman"]],
+    pearson_abs_min_for_report: float,
     encoding: str = DEFAULT_ENCODING,
 ) -> Path:
     import pandas as pd
@@ -1092,6 +1209,8 @@ def generate_correlation_workbook(
 
     wb = Workbook()
     wb.remove(wb.active)
+    excel_max_rows = 1_048_576
+    excel_max_data_rows = excel_max_rows - 1  # account for header row
 
     for file_path in csv_paths:
         print(f"Correlation: {file_path.name}")
@@ -1131,18 +1250,30 @@ def generate_correlation_workbook(
             df_rank = df.rank(axis=0, method="average", na_option="keep")
 
         out_rows = 0
+        truncated = False
         for test_col in module_cols:
+            if out_rows >= excel_max_data_rows:
+                truncated = True
+                break
             s = df[test_col]
             if s.dropna().nunique() < 2:
                 continue
-            pearson = df.corrwith(s, method="pearson") if "pearson" in methods else None
-            spearman = None
-            if "spearman" in methods and df_rank is not None:
-                spearman = df_rank.corrwith(df_rank[test_col], method="pearson")
+            pearson = _safe_corr_against_all(df, test_col) if "pearson" in methods else None
+            spearman = _safe_corr_against_all(df_rank, test_col) if ("spearman" in methods and df_rank is not None) else None
 
             for other_col in meta.numeric_test_cols:
+                if out_rows >= excel_max_data_rows:
+                    truncated = True
+                    break
                 if other_col == test_col:
                     continue
+
+                pearson_value = None
+                if pearson is not None:
+                    pearson_value = _to_float(pearson.get(other_col))
+                if pearson_value is None or abs(float(pearson_value)) <= float(pearson_abs_min_for_report):
+                    continue
+
                 row = [
                     module_by_col[test_col],
                     int(test_col),
@@ -1151,11 +1282,14 @@ def generate_correlation_workbook(
                     test_name_by_col[other_col],
                 ]
                 if pearson is not None:
-                    row.append(_to_float(pearson.get(other_col)))
+                    row.append(pearson_value)
                 if spearman is not None:
                     row.append(_to_float(spearman.get(other_col)))
                 sheet.append(row)
                 out_rows += 1
+
+        if truncated:
+            print(f"  - Correlation rows truncated at Excel limit ({excel_max_data_rows} data rows)")
 
         if out_rows == 0:
             wb.remove(sheet)
@@ -1180,6 +1314,47 @@ def generate_correlation_workbook(
 
     print(f"Saved: {out_xlsx}")
     return out_xlsx
+
+
+def _safe_pair_correlation(a, b) -> float | None:
+    """Compute Pearson correlation for two aligned series safely.
+
+    Returns None when there are not enough paired values or one side is constant.
+    """
+    import numpy as np
+    import pandas as pd
+
+    aa = pd.to_numeric(a, errors="coerce")
+    bb = pd.to_numeric(b, errors="coerce")
+    valid = aa.notna() & bb.notna()
+    if int(valid.sum()) < 2:
+        return None
+
+    av = aa[valid].to_numpy(dtype=float)
+    bv = bb[valid].to_numpy(dtype=float)
+    if av.size < 2 or bv.size < 2:
+        return None
+
+    std_a = float(np.std(av, ddof=1))
+    std_b = float(np.std(bv, ddof=1))
+    if not np.isfinite(std_a) or not np.isfinite(std_b) or std_a == 0.0 or std_b == 0.0:
+        return None
+
+    corr = float(np.corrcoef(av, bv)[0, 1])
+    if not np.isfinite(corr):
+        return None
+    return corr
+
+
+def _safe_corr_against_all(df, target_col: str) -> dict[str, float | None]:
+    """Safe correlation of target column against all columns in df."""
+    out: dict[str, float | None] = {}
+    target = df[target_col]
+    for col in df.columns:
+        if col == target_col:
+            continue
+        out[col] = _safe_pair_correlation(target, df[col])
+    return out
 
 
 def run() -> int:
@@ -1210,6 +1385,7 @@ def run() -> int:
             max_files=MAX_FILES,
             single_file=SINGLE_FILE,
             methods=CORRELATION_METHODS,
+            pearson_abs_min_for_report=PEARSON_ABS_MIN_FOR_REPORT,
             encoding=ENCODING,
         )
 

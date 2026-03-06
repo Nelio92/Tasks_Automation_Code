@@ -59,11 +59,11 @@ CONFIG = OdiImportConfig(
 	#odi_columns=None,
     #modules={"TXGE","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS"},
 	#odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
-	modules={"TXGE","TXPD"},
+	modules={"TXGE","TXLO","TXPA","TXPB","TXPC"},
 	odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
 	# Output metadata
-	comment="TX updates from the Test-D and Test-Q ELFR verifications",
-	jira_tasks="RSIPPTE-600,RSIPPTE-587",
+	comment="Updates from the Test-D2 and Test-Q ELFR verifications",
+	jira_tasks="RSIPPTE-637,RSIPPTE-646,RSIPPTE-653",
 	odi_source="INS_OFF",
 	test_variants="8188",
 )
