@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
 SAMPLE_INPUT_DIR = TEST_DATA_ANALYSIS_DIR / "tests" / "smoke_input"
 SAMPLE_FILE_NAME = "smoke_Q2_sample.csv"
+OVERVIEW_SHEET_NAME = "Overview"
 SAMPLE_SHEET_NAME = "smoke_Q2_sample"
 SAMPLE_PLOTS_SHEET_NAME = "smoke_Q2_sample_PLOTS"
 
@@ -86,13 +87,27 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
 
             workbook = load_workbook(yield_report, read_only=True, data_only=True)
             try:
+                self.assertIn(OVERVIEW_SHEET_NAME, workbook.sheetnames)
                 self.assertIn(SAMPLE_SHEET_NAME, workbook.sheetnames)
                 self.assertIn(SAMPLE_PLOTS_SHEET_NAME, workbook.sheetnames)
+                self.assertEqual(workbook.sheetnames[0], OVERVIEW_SHEET_NAME)
+                overview_worksheet = workbook[OVERVIEW_SHEET_NAME]
                 worksheet = workbook[SAMPLE_SHEET_NAME]
+                plots_worksheet = workbook[SAMPLE_PLOTS_SHEET_NAME]
                 data_rows = list(worksheet.iter_rows(min_row=2, values_only=True))
+                self.assertEqual(overview_worksheet["A1"].value, "Test Data Analysis Overview")
+                self.assertEqual(overview_worksheet["A5"].value, "Files processed")
+                self.assertEqual(overview_worksheet["B5"].value, 1)
+                self.assertEqual(overview_worksheet["A7"].value, "Affected tests")
+                self.assertEqual(overview_worksheet["B7"].value, 1)
+                self.assertEqual(overview_worksheet["A14"].value, "Top issues")
                 self.assertEqual(len(data_rows), 1, "Expected exactly one affected test row in the smoke sample")
                 self.assertEqual(worksheet["G1"].value, "Status")
                 self.assertEqual(worksheet["G1"].fill.fgColor.rgb, "00FFF2CC")
+                self.assertEqual(plots_worksheet["C1"].value, "Wafer map (interactive HTML)")
+                self.assertEqual(plots_worksheet["D1"].value, "Wafer map (static PNG)")
+                self.assertEqual(plots_worksheet["C3"].value, "Open interactive wafer map")
+                self.assertEqual(plots_worksheet["D3"].value, "Open wafer PNG")
 
                 row = data_rows[0]
                 self.assertEqual(row[0], "TXPA")

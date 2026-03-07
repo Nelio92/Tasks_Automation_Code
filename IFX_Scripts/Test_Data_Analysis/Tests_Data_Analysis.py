@@ -719,6 +719,47 @@ def _prepare_wafer_map_frame(values, *, meta_cols):
     return df, wafers, vmin, vmax
 
 
+def _build_wafer_grid(d):
+    import numpy as np
+
+    grouped = d.groupby(["Y", "X"], as_index=False).agg(v=("v", "median"), FAIL=("FAIL", "max"))
+
+    xv = grouped["X"].to_numpy(dtype=float)
+    yv = grouped["Y"].to_numpy(dtype=float)
+    vv = grouped["v"].to_numpy(dtype=float)
+    fails = grouped["FAIL"].to_numpy(dtype=bool)
+
+    x_unique = np.sort(np.unique(xv))
+    y_unique = np.sort(np.unique(yv))
+    x_index = {float(x): idx for idx, x in enumerate(x_unique)}
+    y_index = {float(y): idx for idx, y in enumerate(y_unique)}
+
+    grid = np.full((len(y_unique), len(x_unique)), np.nan, dtype=float)
+    fail_mask = np.zeros((len(y_unique), len(x_unique)), dtype=bool)
+    for x_val, y_val, v_val, fail_val in zip(xv, yv, vv, fails, strict=False):
+        xi = x_index[float(x_val)]
+        yi = y_index[float(y_val)]
+        grid[yi, xi] = float(v_val)
+        fail_mask[yi, xi] = bool(fail_val)
+
+    return x_unique, y_unique, grid, fail_mask, int(np.count_nonzero(fails))
+
+
+def _build_wafer_map_title(
+    title: str,
+    *,
+    low_limit: float | None,
+    high_limit: float | None,
+    unit: str | None,
+    median_v: float | None,
+) -> str:
+    unit_txt = unit.strip() if isinstance(unit, str) and unit.strip() else "-"
+    ltl_txt = _fmt_num(float(low_limit)) if low_limit is not None and math.isfinite(float(low_limit)) else "N/A"
+    utl_txt = _fmt_num(float(high_limit)) if high_limit is not None and math.isfinite(float(high_limit)) else "N/A"
+    median_txt = _fmt_num(float(median_v)) if median_v is not None and math.isfinite(float(median_v)) else "N/A"
+    return title + "\n" + f"LTL={ltl_txt}; UTL={utl_txt}; Unit={unit_txt}; median={median_txt}"
+
+
 def _wafer_map_html(
     values,
     *,
@@ -727,8 +768,10 @@ def _wafer_map_html(
     out_path: Path,
     low_limit: float | None = None,
     high_limit: float | None = None,
+    unit: str | None = None,
+    median_v: float | None = None,
 ) -> None:
-    """Create an interactive wafer map HTML with hover details for each chip."""
+    """Create an interactive wafer map HTML using a heatmap/imshow-style raster."""
     import numpy as np
 
     df, wafers, vmin, vmax = _prepare_wafer_map_frame(values, meta_cols=meta_cols)
@@ -743,6 +786,7 @@ def _wafer_map_html(
 
     low = -np.inf if low_limit is None else float(low_limit)
     high = np.inf if high_limit is None else float(high_limit)
+    wafermap_scale = 2.0
 
     n = len(wafers)
     ncols = 3 if n >= 3 else n
@@ -762,15 +806,13 @@ def _wafer_map_html(
     for idx, (w, d) in enumerate(wafer_frames, start=1):
         row = (idx - 1) // ncols + 1
         col = (idx - 1) % ncols + 1
-        xv = d["X"].to_numpy(dtype=float)
-        yv = d["Y"].to_numpy(dtype=float)
-        vv = d["v"].to_numpy(dtype=float)
-        fails = (vv < low) | (vv > high)
+        d["FAIL"] = (d["v"].to_numpy(dtype=float) < low) | (d["v"].to_numpy(dtype=float) > high)
+        x_unique, y_unique, grid, fail_mask, n_fail = _build_wafer_grid(d)
 
-        x_min = float(np.nanmin(xv))
-        x_max = float(np.nanmax(xv))
-        y_min = float(np.nanmin(yv))
-        y_max = float(np.nanmax(yv))
+        x_min = float(x_unique.min())
+        x_max = float(x_unique.max())
+        y_min = float(y_unique.min())
+        y_max = float(y_unique.max())
         if x_min == x_max:
             x_min -= 0.5
             x_max += 0.5
@@ -778,108 +820,87 @@ def _wafer_map_html(
             y_min -= 0.5
             y_max += 0.5
 
-        point_count = max(1, len(vv))
-        marker_size = float(min(42.0, max(12.0, 300.0 / math.sqrt(point_count))))
-        chip_id_series = d["CHIP_ID"].astype(str) if "CHIP_ID" in d.columns else None
-        site_series = d["SITE_NUM"].astype(str) if "SITE_NUM" in d.columns else None
-
-        hover_text = []
-        for i in range(len(d)):
-            chip_line = ""
-            if chip_id_series is not None and chip_id_series.iloc[i] not in {"", "<NA>", "nan", "None"}:
-                chip_line = f"<br>Chip ID={chip_id_series.iloc[i]}"
-            site_line = ""
-            if site_series is not None and site_series.iloc[i] not in {"", "<NA>", "nan", "None"}:
-                site_line = f"<br>Site={site_series.iloc[i]}"
-            hover_text.append(
-                "<br>".join(
-                    [
-                        f"Wafer={w}",
-                        f"X={_fmt_num(float(xv[i]))}",
-                        f"Y={_fmt_num(float(yv[i]))}",
-                        f"Value={_fmt_num(float(vv[i]))}",
-                        f"Status={'FAIL' if bool(fails[i]) else 'PASS'}",
-                    ]
-                )
-                + chip_line
-                + site_line
-            )
+        customdata = np.empty((len(y_unique), len(x_unique), 5), dtype=object)
+        customdata[:, :, 0] = w
+        customdata[:, :, 1] = np.broadcast_to(x_unique.reshape(1, -1), (len(y_unique), len(x_unique)))
+        customdata[:, :, 2] = np.broadcast_to(y_unique.reshape(-1, 1), (len(y_unique), len(x_unique)))
+        customdata[:, :, 3] = np.where(np.isfinite(grid), np.vectorize(_fmt_num)(grid), "N/A")
+        customdata[:, :, 4] = np.where(fail_mask, "FAIL", np.where(np.isfinite(grid), "PASS", "NO DATA"))
 
         fig.add_trace(
-            go.Scatter(
-                x=xv,
-                y=yv,
-                mode="markers",
-                text=hover_text,
-                hovertemplate="%{text}<extra></extra>",
+            go.Heatmap(
+                x=x_unique,
+                y=y_unique,
+                z=grid,
+                customdata=customdata,
+                hovertemplate=(
+                    "Wafer=%{customdata[0]}<br>"
+                    "X=%{customdata[1]}<br>"
+                    "Y=%{customdata[2]}<br>"
+                    "Value=%{customdata[3]}<br>"
+                    "Status=%{customdata[4]}<extra></extra>"
+                ),
                 showlegend=False,
-                marker={
-                    "symbol": "square",
-                    "size": marker_size,
-                    "color": vv,
-                    "colorscale": "Turbo",
-                    "cmin": vmin,
-                    "cmax": vmax,
-                    "line": {"color": "#2F2F2F", "width": 0.8},
-                    "colorbar": {"title": "Value"},
-                    "showscale": showscale_remaining,
-                },
+                colorscale="Turbo",
+                zmin=vmin,
+                zmax=vmax,
+                xgap=max(1, int(wafermap_scale)),
+                ygap=max(1, int(wafermap_scale)),
+                colorbar={"title": "Value"},
+                showscale=showscale_remaining,
             ),
             row=row,
             col=col,
         )
         showscale_remaining = False
 
-        if np.any(fails):
+        fail_y_idx, fail_x_idx = np.where(fail_mask)
+        if fail_y_idx.size > 0:
             fig.add_trace(
                 go.Scatter(
-                    x=xv[fails],
-                    y=yv[fails],
+                    x=x_unique[fail_x_idx],
+                    y=y_unique[fail_y_idx],
                     mode="markers",
                     hoverinfo="skip",
                     showlegend=False,
                     marker={
                         "symbol": "square-open",
-                        "size": marker_size + 6,
+                        "size": 16.0 * wafermap_scale,
                         "color": "#D62728",
-                        "line": {"color": "#D62728", "width": 2.0},
+                        "line": {"color": "#D62728", "width": 2.0 * wafermap_scale},
                     },
                 ),
                 row=row,
                 col=col,
             )
 
-        xref = f"x{idx}" if idx > 1 else "x"
-        yref = f"y{idx}" if idx > 1 else "y"
-        fig.add_shape(
-            type="circle",
-            xref=xref,
-            yref=yref,
-            x0=x_min,
-            x1=x_max,
-            y0=y_min,
-            y1=y_max,
-            line={"color": "#666666", "width": 1.5},
-        )
         fig.update_xaxes(range=[x_min, x_max], showgrid=True, gridcolor="rgba(0,0,0,0.12)", row=row, col=col)
         fig.update_yaxes(
             range=[y_min, y_max],
             showgrid=True,
             gridcolor="rgba(0,0,0,0.12)",
-            scaleratio=1,
-            scaleanchor=xref,
             row=row,
             col=col,
         )
 
     fig.update_layout(
-        title={"text": title, "x": 0.5},
+        title={
+            "text": _build_wafer_map_title(
+                title,
+                low_limit=low_limit,
+                high_limit=high_limit,
+                unit=unit,
+                median_v=median_v,
+            ),
+            "x": 0.5,
+        },
         template="plotly_white",
         dragmode="zoom",
         hovermode="closest",
-        width=max(1200, 480 * ncols),
-        height=max(700, 420 * nrows),
+        width=max(1200, 480 * ncols) * wafermap_scale,
+        height=max(700, 420 * nrows) * wafermap_scale,
         margin={"l": 40, "r": 40, "t": 90, "b": 40},
+        font={"size": 12 * wafermap_scale},
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(out_path, include_plotlyjs=True, full_html=True, auto_open=False)
@@ -893,62 +914,24 @@ def _wafer_map_png(
     out_path: Path,
     low_limit: float | None = None,
     high_limit: float | None = None,
+    unit: str | None = None,
+    median_v: float | None = None,
 ) -> None:
-    """Create a wafer map scatter plot using X/Y and (optionally) WAFER.
-
-    Colors show the test value distribution; spec-fail points are highlighted.
-    """
-    import pandas as pd
+    """Create a wafer map image plot using imshow with aspect='auto'."""
     import numpy as np
-
-    if meta_cols is None:
-        return
-    if not all(c in getattr(meta_cols, "columns", []) for c in ("X", "Y")):
-        return
 
     try:
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.patches import Ellipse
         import matplotlib.colors as mcolors
     except Exception:
         return
 
-    import warnings
-
-    v = pd.to_numeric(values, errors="coerce")
-    x = pd.to_numeric(meta_cols["X"], errors="coerce")
-    y = pd.to_numeric(meta_cols["Y"], errors="coerce")
-    wafer = _normalize_wafer_ids(meta_cols["WAFER"]) if "WAFER" in meta_cols.columns else None
-
-    df = pd.DataFrame({"v": v, "X": x, "Y": y})
-    if wafer is not None:
-        df["WAFER"] = wafer
-
-    df = df.dropna(subset=["v", "X", "Y"]).copy()
-    if df.empty:
+    df, wafers, vmin, vmax = _prepare_wafer_map_frame(values, meta_cols=meta_cols)
+    if df is None or wafers is None:
         return
-
-    # Choose wafers to plot.
-    if "WAFER" in df.columns and df["WAFER"].notna().any():
-        counts = df.dropna(subset=["WAFER"]).groupby("WAFER")["v"].size().sort_values(ascending=False)
-        wafers = [str(w) for w in counts.index.tolist()]
-    else:
-        wafers = ["ALL"]
-        df["WAFER"] = "ALL"
-
-    max_wafers = 6
-    wafers = wafers[:max_wafers]
-
-    # Shared color scaling across subplots.
-    all_v = df["v"].to_numpy(dtype=float)
-    vmin = float(np.nanpercentile(all_v, 1))
-    vmax = float(np.nanpercentile(all_v, 99))
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
-        vmin = float(np.nanmin(df["v"]))
-        vmax = float(np.nanmax(df["v"]))
 
     # Vivid multi-color gradient that makes extremes pop.
     try:
@@ -957,7 +940,7 @@ def _wafer_map_png(
         cmap = plt.get_cmap("viridis")
 
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax, clip=True)
-    wafermap_scale = 3.0
+    wafermap_scale = 1.0
 
     n = len(wafers)
     ncols = 3 if n >= 3 else n
@@ -977,54 +960,36 @@ def _wafer_map_png(
 
     mappable = None
     for ax, w in zip(axes, wafers, strict=False):
-        d = df[df["WAFER"].astype(str) == str(w)]
+        d = df[df["WAFER"].astype(str) == str(w)].copy()
         if d.empty:
             ax.axis("off")
             continue
 
-        xv = d["X"].to_numpy(dtype=float)
-        yv = d["Y"].to_numpy(dtype=float)
-        vv = d["v"].to_numpy(dtype=float)
+        d["FAIL"] = (d["v"].to_numpy(dtype=float) < low) | (d["v"].to_numpy(dtype=float) > high)
+        grouped = d.groupby(["Y", "X"], as_index=False).agg(v=("v", "median"), FAIL=("FAIL", "max"))
 
-        fails = (vv < low) | (vv > high)
+        xv = grouped["X"].to_numpy(dtype=float)
+        yv = grouped["Y"].to_numpy(dtype=float)
+        vv = grouped["v"].to_numpy(dtype=float)
+        fails = grouped["FAIL"].to_numpy(dtype=bool)
         n_fail = int(np.count_nonzero(fails))
 
-        point_count = max(1, len(vv))
-        base_chip_marker_size = float(min(165.0, max(55.0, 2200.0 / math.sqrt(point_count))))
-        chip_marker_size = base_chip_marker_size * wafermap_scale
-        fail_marker_size = chip_marker_size * 1.8
+        x_unique = np.sort(np.unique(xv))
+        y_unique = np.sort(np.unique(yv))
+        x_index = {float(x): idx for idx, x in enumerate(x_unique)}
+        y_index = {float(y): idx for idx, y in enumerate(y_unique)}
+        grid = np.full((len(y_unique), len(x_unique)), np.nan, dtype=float)
+        fail_mask = np.zeros((len(y_unique), len(x_unique)), dtype=bool)
+        for x_val, y_val, v_val, fail_val in zip(xv, yv, vv, fails, strict=False):
+            xi = x_index[float(x_val)]
+            yi = y_index[float(y_val)]
+            grid[yi, xi] = float(v_val)
+            fail_mask[yi, xi] = bool(fail_val)
 
-        sc = ax.scatter(
-            xv,
-            yv,
-            c=vv,
-            cmap=cmap,
-            norm=norm,
-            s=chip_marker_size,
-            marker="s",
-            linewidths=0.20 * wafermap_scale,
-            edgecolors="#2F2F2F",
-            alpha=0.98,
-        )
-        mappable = sc
-
-        if np.any(fails):
-            ax.scatter(
-                xv[fails],
-                yv[fails],
-                facecolors="none",
-                edgecolors="#D62728",
-                linewidths=1.6 * wafermap_scale,
-                s=fail_marker_size,
-                marker="s",
-                label=f"fails={n_fail}",
-            )
-
-        # Wafer outline based on the visible chip coordinate envelope.
-        x_min = float(np.nanmin(xv))
-        x_max = float(np.nanmax(xv))
-        y_min = float(np.nanmin(yv))
-        y_max = float(np.nanmax(yv))
+        x_min = float(x_unique.min())
+        x_max = float(x_unique.max())
+        y_min = float(y_unique.min())
+        y_max = float(y_unique.max())
 
         if x_min == x_max:
             x_min -= 0.5
@@ -1033,25 +998,47 @@ def _wafer_map_png(
             y_min -= 0.5
             y_max += 0.5
 
-        cx = 0.5 * (x_min + x_max)
-        cy = 0.5 * (y_min + y_max)
-        ax.add_patch(
-            Ellipse(
-                (cx, cy),
-                width=(x_max - x_min),
-                height=(y_max - y_min),
-                fill=False,
-                color="#666666",
-                linewidth=0.8 * wafermap_scale,
-                alpha=0.8,
-            )
+        image = ax.imshow(
+            np.ma.masked_invalid(grid),
+            origin="lower",
+            interpolation="nearest",
+            cmap=cmap,
+            norm=norm,
+            aspect="auto",
+            extent=(x_min, x_max, y_min, y_max),
         )
+        mappable = image
+
+        if np.any(fail_mask):
+            fail_overlay = np.zeros((*fail_mask.shape, 4), dtype=float)
+            fail_overlay[..., 0] = 0.84
+            fail_overlay[..., 1] = 0.15
+            fail_overlay[..., 2] = 0.16
+            fail_overlay[..., 3] = fail_mask.astype(float) * 0.45
+            ax.imshow(
+                fail_overlay,
+                origin="lower",
+                interpolation="nearest",
+                aspect="auto",
+                extent=(x_min, x_max, y_min, y_max),
+            )
+            fail_y_idx, fail_x_idx = np.where(fail_mask)
+            fail_marker_size = max(80.0, 550.0 / math.sqrt(max(1, fail_y_idx.size)))
+            ax.scatter(
+                x_unique[fail_x_idx],
+                y_unique[fail_y_idx],
+                facecolors="none",
+                edgecolors="#D62728",
+                linewidths=1.8,
+                s=fail_marker_size,
+                marker="s",
+            )
 
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
 
         ax.set_title(f"WAFER={w}  N={len(vv)}  fails={n_fail}", fontsize=10 * wafermap_scale)
-        ax.set_aspect("equal", adjustable="box")
+        ax.set_aspect("auto")
         ax.grid(True, alpha=0.12)
         ax.tick_params(labelsize=9 * wafermap_scale)
 
@@ -1066,7 +1053,16 @@ def _wafer_map_png(
         cbar.ax.tick_params(labelsize=8 * wafermap_scale)
         cbar.set_label("Value", fontsize=9 * wafermap_scale)
 
-    fig.suptitle(title, fontsize=10 * wafermap_scale)
+    fig.suptitle(
+        _build_wafer_map_title(
+            title,
+            low_limit=low_limit,
+            high_limit=high_limit,
+            unit=unit,
+            median_v=median_v,
+        ),
+        fontsize=10 * wafermap_scale,
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, format="png")
     plt.close(fig)
@@ -1344,6 +1340,159 @@ def _proposed_sigma_limits(values) -> tuple[float | None, float | None, float | 
     return l6, u6, l12, u12
 
 
+def _add_overview_sheet(
+    workbook,
+    *,
+    summary_entries: list[dict[str, Any]],
+    processed_files: list[str],
+    output_folder: Path,
+) -> None:
+    from collections import Counter, defaultdict
+    from datetime import datetime
+
+    from openpyxl.styles import Font, PatternFill
+
+    if "Overview" in workbook.sheetnames:
+        workbook.remove(workbook["Overview"])
+
+    ws = workbook.create_sheet("Overview", 0)
+    ws.sheet_properties.tabColor = "70AD47"
+
+    title_fill = PatternFill(patternType="solid", fgColor="D9EAD3")
+    section_fill = PatternFill(patternType="solid", fgColor="DDEBF7")
+    link_font = Font(color="0000EE", underline="single")
+
+    ws["A1"] = "Test Data Analysis Overview"
+    ws["A1"].font = Font(bold=True, size=16)
+    ws["A1"].fill = title_fill
+
+    status_counts = Counter(entry["status"] for entry in summary_entries)
+    files_with_issues = sorted({entry["file_name"] for entry in summary_entries})
+    total_fail_chips = int(sum(int(entry.get("fail_chips") or 0) for entry in summary_entries))
+
+    summary_rows = [
+        ("Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ("Output folder", str(output_folder)),
+        ("Files processed", len(processed_files)),
+        ("Files with issues", len(files_with_issues)),
+        ("Affected tests", len(summary_entries)),
+        ("Total fail chips", total_fail_chips),
+        ("FAILS count", int(status_counts.get("FAILS", 0))),
+        ("Low Cpk count", int(sum(1 for key, count in status_counts.items() if str(key).startswith("Cpk<") for _ in range(count)))),
+        ("High Cpk count", int(sum(1 for key, count in status_counts.items() if str(key).startswith("Cpk>") for _ in range(count)))),
+    ]
+    for row_idx, (label, value) in enumerate(summary_rows, start=3):
+        ws.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=row_idx, column=2, value=value)
+
+    row_cursor = 14
+    ws.cell(row=row_cursor, column=1, value="Top issues").font = Font(bold=True, size=12)
+    ws.cell(row=row_cursor, column=1).fill = section_fill
+    row_cursor += 1
+    top_headers = ["Rank", "File", "Module", "Test Nr", "Test Name", "Status", "Fail Chips", "Yield (%)", "Cpk", "Detail"]
+    for col_idx, header in enumerate(top_headers, start=1):
+        cell = ws.cell(row=row_cursor, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+    row_cursor += 1
+
+    def _sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        status = str(item.get("status") or "")
+        severity = 0 if status == "FAILS" else (1 if status.startswith("Cpk<") else 2)
+        fail_chips = int(item.get("fail_chips") or 0)
+        yield_pct = item.get("yield_pct")
+        yield_score = 101.0 if yield_pct is None else float(yield_pct)
+        cpk = item.get("cpk")
+        cpk_score = 9999.0 if cpk is None else float(cpk)
+        return (severity, -fail_chips, yield_score, cpk_score, str(item.get("file_name") or ""), str(item.get("test_name") or ""))
+
+    top_entries = sorted(summary_entries, key=_sort_key)[:10]
+    for rank, entry in enumerate(top_entries, start=1):
+        values = [
+            rank,
+            entry["file_name"],
+            entry["module"],
+            entry["test_col"],
+            entry["test_name"],
+            entry["status"],
+            entry["fail_chips"],
+            entry["yield_pct"],
+            entry["cpk"],
+            "Open",
+        ]
+        for col_idx, value in enumerate(values, start=1):
+            ws.cell(row=row_cursor, column=col_idx, value=value)
+        detail_cell = ws.cell(row=row_cursor, column=10)
+        detail_cell.hyperlink = entry["detail_link"]
+        detail_cell.font = link_font
+        row_cursor += 1
+
+    row_cursor += 1
+    ws.cell(row=row_cursor, column=1, value="Module summary").font = Font(bold=True, size=12)
+    ws.cell(row=row_cursor, column=1).fill = section_fill
+    row_cursor += 1
+    module_headers = ["Module", "Affected tests", "FAILS", "Total fail chips"]
+    for col_idx, header in enumerate(module_headers, start=1):
+        cell = ws.cell(row=row_cursor, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+    row_cursor += 1
+
+    module_summary: dict[str, dict[str, int]] = defaultdict(lambda: {"affected": 0, "fails": 0, "fail_chips": 0})
+    for entry in summary_entries:
+        item = module_summary[str(entry["module"])]
+        item["affected"] += 1
+        if str(entry["status"]) == "FAILS":
+            item["fails"] += 1
+        item["fail_chips"] += int(entry.get("fail_chips") or 0)
+    for module_name in sorted(module_summary):
+        item = module_summary[module_name]
+        ws.append([module_name, item["affected"], item["fails"], item["fail_chips"]])
+
+    row_cursor = ws.max_row + 2
+    ws.cell(row=row_cursor, column=1, value="File summary").font = Font(bold=True, size=12)
+    ws.cell(row=row_cursor, column=1).fill = section_fill
+    row_cursor += 1
+    file_headers = ["File", "Affected tests", "FAILS", "Total fail chips", "Data sheet", "Plots sheet"]
+    for col_idx, header in enumerate(file_headers, start=1):
+        cell = ws.cell(row=row_cursor, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+    row_cursor += 1
+
+    file_summary: dict[str, dict[str, Any]] = {}
+    for entry in summary_entries:
+        file_name = str(entry["file_name"])
+        item = file_summary.setdefault(
+            file_name,
+            {
+                "affected": 0,
+                "fails": 0,
+                "fail_chips": 0,
+                "sheet_name": entry["sheet_name"],
+                "plots_sheet_name": entry["plots_sheet_name"],
+            },
+        )
+        item["affected"] += 1
+        if str(entry["status"]) == "FAILS":
+            item["fails"] += 1
+        item["fail_chips"] += int(entry.get("fail_chips") or 0)
+
+    for file_name in sorted(file_summary):
+        item = file_summary[file_name]
+        ws.cell(row=row_cursor, column=1, value=file_name)
+        ws.cell(row=row_cursor, column=2, value=item["affected"])
+        ws.cell(row=row_cursor, column=3, value=item["fails"])
+        ws.cell(row=row_cursor, column=4, value=item["fail_chips"])
+        data_cell = ws.cell(row=row_cursor, column=5, value="Open")
+        data_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['sheet_name']))}!A1"
+        data_cell.font = link_font
+        plots_cell = ws.cell(row=row_cursor, column=6, value="Open")
+        plots_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['plots_sheet_name']))}!A1"
+        plots_cell.font = link_font
+        row_cursor += 1
+
+    _autofit_openpyxl_columns(ws)
+    ws.freeze_panes = "A3"
+
+
 def generate_yield_cpk_report(
     *,
     input_folder: Path,
@@ -1385,6 +1534,7 @@ def generate_yield_cpk_report(
     # Remove default sheet
     wb.remove(wb.active)
     plot_image_targets_by_sheet: dict[str, list[str]] = {}
+    overview_entries: list[dict[str, Any]] = []
 
     total_files = len(csv_paths)
     for file_idx, file_path in enumerate(csv_paths, start=1):
@@ -1492,10 +1642,16 @@ def generate_yield_cpk_report(
         status_header_fill = PatternFill(patternType="solid", fgColor="FFF2CC")
         ws.cell(row=1, column=headers.index("Status") + 1).fill = status_header_fill
 
-        ws_plots.append(["Test", "CDF (fails highlighted)", "Wafer map (fails highlighted)"])
+        ws_plots.append([
+            "Test",
+            "CDF (fails highlighted)",
+            "Wafer map (interactive HTML)",
+            "Wafer map (static PNG)",
+        ])
         ws_plots["A1"].font = Font(bold=True)
         ws_plots["B1"].font = Font(bold=True)
         ws_plots["C1"].font = Font(bold=True)
+        ws_plots["D1"].font = Font(bold=True)
 
         plot_anchor_row = 3
         out_rows = 0
@@ -1578,6 +1734,8 @@ def generate_yield_cpk_report(
                 out_path=wafer_map_path,
                 low_limit=low,
                 high_limit=high,
+                unit=unit,
+                median_v=float(np.median(finite)),
             )
             wafer_map_html_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.html"
             _wafer_map_html(
@@ -1587,6 +1745,8 @@ def generate_yield_cpk_report(
                 out_path=wafer_map_html_path,
                 low_limit=low,
                 high_limit=high,
+                unit=unit,
+                median_v=float(np.median(finite)),
             )
 
             # Write to plots sheet.
@@ -1611,6 +1771,14 @@ def generate_yield_cpk_report(
                 wafer_link.font = Font(color="0000EE", underline="single")
             else:
                 wafer_uri = None
+
+            wafer_png_link = ws_plots[f"D{plot_anchor_row}"]
+            wafer_png_link.value = "Open wafer PNG"
+            if wafer_map_path.exists():
+                wafer_png_uri = wafer_map_path.resolve().as_uri()
+                wafer_png_link.hyperlink = wafer_png_uri
+                wafer_png_link.font = Font(color="0000EE", underline="single")
+
             cdf_anchor_cell = f"B{plot_anchor_row + 1}"
             wafer_anchor_cell = f"K{plot_anchor_row + 1}"
             if plot_path.exists():
@@ -1663,6 +1831,22 @@ def generate_yield_cpk_report(
             link_cell.hyperlink = plot_link_target
             link_cell.font = Font(color="0000EE", underline="single")
 
+            overview_entries.append(
+                {
+                    "file_name": file_path.name,
+                    "sheet_name": ws.title,
+                    "plots_sheet_name": ws_plots.title,
+                    "module": module,
+                    "test_col": int(test_col),
+                    "test_name": test_name,
+                    "status": status,
+                    "fail_chips": n_fail,
+                    "yield_pct": y,
+                    "cpk": c,
+                    "detail_link": f"#{_excel_internal_sheet_ref(ws.title)}!A{row_idx}",
+                }
+            )
+
             _print_progress(
                 "Yield tests",
                 test_idx,
@@ -1708,6 +1892,13 @@ def generate_yield_cpk_report(
     from datetime import datetime
 
     out_xlsx = output_folder / "Yield_Cpk_Report.xlsx"
+    if overview_entries:
+        _add_overview_sheet(
+            wb,
+            summary_entries=overview_entries,
+            processed_files=[p.name for p in csv_paths],
+            output_folder=output_folder,
+        )
     link_issues = _self_check_workbook_internal_hyperlinks(wb)
     if link_issues:
         preview = "\n".join(f"- {msg}" for msg in link_issues[:15])
