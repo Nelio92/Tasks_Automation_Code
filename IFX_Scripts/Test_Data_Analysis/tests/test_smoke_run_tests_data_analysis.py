@@ -100,7 +100,13 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(overview_worksheet["B5"].value, 1)
                 self.assertEqual(overview_worksheet["A7"].value, "Affected tests")
                 self.assertEqual(overview_worksheet["B7"].value, 1)
-                self.assertEqual(overview_worksheet["A14"].value, "Top issues")
+                self.assertEqual(overview_worksheet["A9"].value, "Tests with status=FAILS")
+                self.assertEqual(overview_worksheet["A14"].value, "Module traffic-light summary")
+                self.assertEqual(overview_worksheet["A16"].value, "TXPA")
+                self.assertEqual(overview_worksheet["B16"].value, "RED")
+                self.assertEqual(overview_worksheet["A17"].value, "DPLL")
+                self.assertEqual(overview_worksheet["B17"].value, "GREEN")
+                self.assertEqual(overview_worksheet["A19"].value, "Top 10 issues")
                 self.assertEqual(len(data_rows), 1, "Expected exactly one affected test row in the smoke sample")
                 self.assertEqual(worksheet["G1"].value, "Status")
                 self.assertEqual(worksheet["G1"].fill.fgColor.rgb, "00FFF2CC")
@@ -122,11 +128,21 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             workbook_with_formatting = load_workbook(yield_report, read_only=False, data_only=False)
             try:
                 worksheet_with_formatting = workbook_with_formatting[SAMPLE_SHEET_NAME]
+                overview_with_formatting = workbook_with_formatting[OVERVIEW_SHEET_NAME]
                 cf_rules = list(worksheet_with_formatting.conditional_formatting)
+                overview_cf_rules = list(overview_with_formatting.conditional_formatting)
                 self.assertTrue(cf_rules, "Expected conditional formatting rules in yield workbook")
                 self.assertTrue(
                     any(str(rule.sqref) in {"I2", "I2:I2"} for rule in cf_rules),
                     "Expected Fail Chips conditional formatting on column I",
+                )
+                self.assertTrue(
+                    any(str(rule.sqref) in {"G21", "G21:G21"} for rule in overview_cf_rules),
+                    "Expected Top 10 issues fail-chip data bar formatting on column G",
+                )
+                self.assertTrue(
+                    any(str(rule.sqref) in {"D25:D26", "D25:D26"} for rule in overview_cf_rules),
+                    "Expected Module summary total fail chips data bar formatting on column D",
                 )
             finally:
                 workbook_with_formatting.close()

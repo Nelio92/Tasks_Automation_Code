@@ -1344,12 +1344,14 @@ def _add_overview_sheet(
     workbook,
     *,
     summary_entries: list[dict[str, Any]],
+    modules: list[str],
     processed_files: list[str],
     output_folder: Path,
 ) -> None:
     from collections import Counter, defaultdict
     from datetime import datetime
 
+    from openpyxl.formatting.rule import DataBarRule
     from openpyxl.styles import Font, PatternFill
 
     if "Overview" in workbook.sheetnames:
@@ -1361,6 +1363,11 @@ def _add_overview_sheet(
     title_fill = PatternFill(patternType="solid", fgColor="D9EAD3")
     section_fill = PatternFill(patternType="solid", fgColor="DDEBF7")
     link_font = Font(color="0000EE", underline="single")
+    traffic_fills = {
+        "GREEN": PatternFill(patternType="solid", fgColor="C6E0B4"),
+        "YELLOW": PatternFill(patternType="solid", fgColor="FFE699"),
+        "RED": PatternFill(patternType="solid", fgColor="F4CCCC"),
+    }
 
     ws["A1"] = "Test Data Analysis Overview"
     ws["A1"].font = Font(bold=True, size=16)
@@ -1377,7 +1384,7 @@ def _add_overview_sheet(
         ("Files with issues", len(files_with_issues)),
         ("Affected tests", len(summary_entries)),
         ("Total fail chips", total_fail_chips),
-        ("FAILS count", int(status_counts.get("FAILS", 0))),
+        ("Tests with status=FAILS", int(status_counts.get("FAILS", 0))),
         ("Low Cpk count", int(sum(1 for key, count in status_counts.items() if str(key).startswith("Cpk<") for _ in range(count)))),
         ("High Cpk count", int(sum(1 for key, count in status_counts.items() if str(key).startswith("Cpk>") for _ in range(count)))),
     ]
@@ -1385,14 +1392,90 @@ def _add_overview_sheet(
         ws.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
         ws.cell(row=row_idx, column=2, value=value)
 
+    configured_modules: list[str] = []
+    seen_modules: set[str] = set()
+    for module_name in modules:
+        normalized = str(module_name).strip().upper()
+        if not normalized or normalized in seen_modules:
+            continue
+        configured_modules.append(normalized)
+        seen_modules.add(normalized)
+    for entry in summary_entries:
+        normalized = str(entry.get("module") or "").strip().upper()
+        if not normalized or normalized in seen_modules:
+            continue
+        configured_modules.append(normalized)
+        seen_modules.add(normalized)
+
+    module_summary: dict[str, dict[str, int]] = {
+        module_name: {"affected": 0, "fails": 0, "low_cpk": 0, "high_cpk": 0, "fail_chips": 0}
+        for module_name in configured_modules
+    }
+    for entry in summary_entries:
+        module_name = str(entry.get("module") or "").strip().upper()
+        if not module_name:
+            continue
+        item = module_summary.setdefault(
+            module_name,
+            {"affected": 0, "fails": 0, "low_cpk": 0, "high_cpk": 0, "fail_chips": 0},
+        )
+        item["affected"] += 1
+        status = str(entry.get("status") or "")
+        if status == "FAILS":
+            item["fails"] += 1
+        elif status.startswith("Cpk<"):
+            item["low_cpk"] += 1
+        elif status.startswith("Cpk>"):
+            item["high_cpk"] += 1
+        item["fail_chips"] += int(entry.get("fail_chips") or 0)
+
     row_cursor = 14
-    ws.cell(row=row_cursor, column=1, value="Top issues").font = Font(bold=True, size=12)
+    ws.cell(row=row_cursor, column=1, value="Module traffic-light summary").font = Font(bold=True, size=12)
+    ws.cell(row=row_cursor, column=1).fill = section_fill
+    row_cursor += 1
+    traffic_headers = [
+        "Module",
+        "Overall",
+        "Affected tests",
+        "Tests with status=FAILS",
+        "Low Cpk",
+        "High Cpk",
+        "Total fail chips",
+    ]
+    for col_idx, header in enumerate(traffic_headers, start=1):
+        cell = ws.cell(row=row_cursor, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+    row_cursor += 1
+
+    for module_name in configured_modules:
+        item = module_summary[module_name]
+        if item["fails"] > 0:
+            overall = "RED"
+        elif item["affected"] > 0:
+            overall = "YELLOW"
+        else:
+            overall = "GREEN"
+
+        ws.cell(row=row_cursor, column=1, value=module_name)
+        status_cell = ws.cell(row=row_cursor, column=2, value=overall)
+        status_cell.font = Font(bold=True)
+        status_cell.fill = traffic_fills[overall]
+        ws.cell(row=row_cursor, column=3, value=item["affected"])
+        ws.cell(row=row_cursor, column=4, value=item["fails"])
+        ws.cell(row=row_cursor, column=5, value=item["low_cpk"])
+        ws.cell(row=row_cursor, column=6, value=item["high_cpk"])
+        ws.cell(row=row_cursor, column=7, value=item["fail_chips"])
+        row_cursor += 1
+
+    row_cursor += 1
+    ws.cell(row=row_cursor, column=1, value="Top 10 issues").font = Font(bold=True, size=12)
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
     top_headers = ["Rank", "File", "Module", "Test Nr", "Test Name", "Status", "Fail Chips", "Yield (%)", "Cpk", "Detail"]
     for col_idx, header in enumerate(top_headers, start=1):
         cell = ws.cell(row=row_cursor, column=col_idx, value=header)
         cell.font = Font(bold=True)
+    top_header_row = row_cursor
     row_cursor += 1
 
     def _sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -1426,32 +1509,54 @@ def _add_overview_sheet(
         detail_cell.font = link_font
         row_cursor += 1
 
+    top_issue_start_row = top_header_row + 1
+    top_issue_end_row = row_cursor - 1
+    if top_issue_end_row >= top_issue_start_row:
+        ws.conditional_formatting.add(
+            f"G{top_issue_start_row}:G{top_issue_end_row}",
+            DataBarRule(
+                start_type="num",
+                start_value=0,
+                end_type="max",
+                color="FF0000",
+                showValue=True,
+            ),
+        )
+
     row_cursor += 1
     ws.cell(row=row_cursor, column=1, value="Module summary").font = Font(bold=True, size=12)
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
-    module_headers = ["Module", "Affected tests", "FAILS", "Total fail chips"]
+    module_headers = ["Module", "Affected tests", "Tests with status=FAILS", "Total fail chips"]
     for col_idx, header in enumerate(module_headers, start=1):
         cell = ws.cell(row=row_cursor, column=col_idx, value=header)
         cell.font = Font(bold=True)
+    module_header_row = row_cursor
     row_cursor += 1
 
-    module_summary: dict[str, dict[str, int]] = defaultdict(lambda: {"affected": 0, "fails": 0, "fail_chips": 0})
-    for entry in summary_entries:
-        item = module_summary[str(entry["module"])]
-        item["affected"] += 1
-        if str(entry["status"]) == "FAILS":
-            item["fails"] += 1
-        item["fail_chips"] += int(entry.get("fail_chips") or 0)
-    for module_name in sorted(module_summary):
+    for module_name in configured_modules:
         item = module_summary[module_name]
         ws.append([module_name, item["affected"], item["fails"], item["fail_chips"]])
+
+    module_summary_start_row = module_header_row + 1
+    module_summary_end_row = ws.max_row
+    if module_summary_end_row >= module_summary_start_row:
+        ws.conditional_formatting.add(
+            f"D{module_summary_start_row}:D{module_summary_end_row}",
+            DataBarRule(
+                start_type="num",
+                start_value=0,
+                end_type="max",
+                color="FF0000",
+                showValue=True,
+            ),
+        )
 
     row_cursor = ws.max_row + 2
     ws.cell(row=row_cursor, column=1, value="File summary").font = Font(bold=True, size=12)
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
-    file_headers = ["File", "Affected tests", "FAILS", "Total fail chips", "Data sheet", "Plots sheet"]
+    file_headers = ["File", "Affected tests", "Tests with status=FAILS", "Total fail chips", "Data sheet", "Plots sheet"]
     for col_idx, header in enumerate(file_headers, start=1):
         cell = ws.cell(row=row_cursor, column=col_idx, value=header)
         cell.font = Font(bold=True)
@@ -1896,6 +2001,7 @@ def generate_yield_cpk_report(
         _add_overview_sheet(
             wb,
             summary_entries=overview_entries,
+            modules=modules,
             processed_files=[p.name for p in csv_paths],
             output_folder=output_folder,
         )
