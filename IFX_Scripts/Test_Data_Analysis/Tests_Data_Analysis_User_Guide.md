@@ -40,7 +40,7 @@ The script expects semicolon-separated flat CSV files with this structure:
 
 By default under `PROD_Data/Outputs`:
 
-1. `Yield_Cpk_Report.xlsx`
+1. `Test_Data_Analysis_Report.xlsx`
    - One data sheet per input CSV containing only affected tests.
    - A paired `*_PLOTS` sheet with embedded CDF + wafer map images.
    - Hyperlinks from data sheet (`CDF Plot` column) to plot locations.
@@ -75,6 +75,11 @@ Main parameters:
 - `CORRELATION_METHODS`
 - `PEARSON_ABS_MIN_FOR_REPORT`
 - `WAFERMAP_CIRCLE_AREA_MULT`
+- `CONVERT_STDF_BEFORE_ANALYSIS`
+- `STDF_SINGLE_FILE`
+- `STDF_FILE_PATTERNS`
+
+When STDF pre-conversion is enabled, the launcher uses `INPUT_FOLDER` as the single working folder for the whole flow: it reads source `.stdf` / `.std` files from that folder with the `pystdf` backend, generates the flat CSV files into that same folder, and then continues with the normal analysis flow from those generated CSV files. For each converted STDF file, the converter also writes a DTR sidecar CSV containing alarm/error text records and a JSON consistency report summarizing record counts, malformed-record skips, and basic `PIR`/`PRR`/row-count checks. In the launcher-driven flow, those sidecar artifacts are written into [Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis](Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis) output under `OUTPUT_FOLDER/Artifacts`.
 
 ---
 
@@ -94,6 +99,8 @@ pip install -r Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/requirements
 Run only through the YAML launcher. Direct execution of `Tests_Data_Analysis.py` is intentionally disabled.
 
 Note: all runtime settings are now owned by the YAML config files. `run_tests_data_analysis.py` loads the selected YAML profile and applies those values before `Tests_Data_Analysis.py` runs.
+
+Optional STDF automation is available through the same launcher. Set `convert_stdf_before_analysis: true` to run the conversion step automatically before the report generation starts. The launcher now uses only `input_folder` for both the source STDF files and the generated CSV files. If needed, `stdf_single_file` limits conversion to one source STDF file and `stdf_file_patterns` narrows the discovery glob patterns. The standalone converter module remains reusable on its own, while the launcher simply calls it before starting the normal CSV analysis phase.
 
 ### Team runner (recommended)
 
@@ -257,7 +264,7 @@ What it validates:
 
 - YAML-driven launcher starts correctly.
 - Sample input parses successfully.
-- `Yield_Cpk_Report.xlsx` is created.
+- `Test_Data_Analysis_Report.xlsx` is created.
 - `Correlation_Report.xlsx` is created.
 - Plot PNGs are generated under `cdf_plots`.
 - Parser/status unit tests stay green for key helper logic.
@@ -294,5 +301,5 @@ What it validates:
 1. Select a profile in `Tasks_Automation_Code/IFX_Scripts/Test_Data_Analysis/configs`.
 2. (Optional) set `single_file` in the selected YAML for first validation run.
 3. Run `run_tests_data_analysis.ps1`.
-4. Open `Yield_Cpk_Report.xlsx` in output folder.
+4. Open `Test_Data_Analysis_Report.xlsx` in output folder.
 5. Use `CDF Plot` links and `*_PLOTS` sheets for deep-dive review.

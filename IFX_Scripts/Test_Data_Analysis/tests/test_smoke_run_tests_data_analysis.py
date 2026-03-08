@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,13 +25,19 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
     def test_cli_generates_expected_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
+            input_dir = tmp_path / "input"
+            shutil.copytree(SAMPLE_INPUT_DIR, input_dir)
+            (input_dir / "smoke_Q2_sample_dtr_records.csv").write_text(
+                "Index;Category;Message\n1;ALARM;Example sidecar\n",
+                encoding="utf-8",
+            )
             output_dir = tmp_path / "outputs"
             output_dir.mkdir(parents=True, exist_ok=True)
             config_path = tmp_path / "config_smoke.yaml"
             config_path.write_text(
                 textwrap.dedent(
                     f"""\
-                    input_folder: {SAMPLE_INPUT_DIR.as_posix()}
+                    input_folder: {input_dir.as_posix()}
                     output_folder: {output_dir.as_posix()}
                     modules:
                       - TXPA
@@ -73,9 +80,10 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             self.assertIn("[Yield tests]", result.stdout)
             self.assertIn("[Corr files]", result.stdout)
             self.assertIn("[Corr tests]", result.stdout)
+            self.assertIn("[Workflow]", result.stdout)
             self.assertIn("100%", result.stdout)
 
-            yield_report = output_dir / "Yield_Cpk_Report.xlsx"
+            yield_report = output_dir / "Test_Data_Analysis_Report.xlsx"
             correlation_report = output_dir / "Correlation_Report.xlsx"
             self.assertTrue(yield_report.exists(), "Yield/Cpk report was not created")
             self.assertTrue(correlation_report.exists(), "Correlation report was not created")
@@ -83,7 +91,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             png_files = list((output_dir / "cdf_plots").rglob("*.png"))
             self.assertGreaterEqual(len(png_files), 2, "Expected CDF and wafer map PNG outputs")
             html_files = list((output_dir / "cdf_plots").rglob("*.html"))
-            self.assertGreaterEqual(len(html_files), 1, "Expected interactive wafer map HTML output")
+            self.assertEqual(len(html_files), 0, "Did not expect interactive wafer map HTML without wafer/XY signature")
 
             workbook = load_workbook(yield_report, read_only=True, data_only=True)
             try:
@@ -100,28 +108,44 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(overview_worksheet["B5"].value, 1)
                 self.assertEqual(overview_worksheet["A7"].value, "Affected tests")
                 self.assertEqual(overview_worksheet["B7"].value, 1)
-                self.assertEqual(overview_worksheet["A9"].value, "Tests with status=FAILS")
-                self.assertEqual(overview_worksheet["A14"].value, "Module traffic-light summary")
-                self.assertEqual(overview_worksheet["A16"].value, "TXPA")
-                self.assertEqual(overview_worksheet["B16"].value, "RED")
-                self.assertEqual(overview_worksheet["A17"].value, "DPLL")
-                self.assertEqual(overview_worksheet["B17"].value, "GREEN")
-                self.assertEqual(overview_worksheet["A19"].value, "Top 10 issues")
+                self.assertEqual(overview_worksheet["A9"].value, "High-priority tests")
+                self.assertEqual(overview_worksheet["A20"].value, "Module level summary")
+                self.assertEqual(overview_worksheet["C21"].value, "Fails")
+                self.assertEqual(overview_worksheet["G21"].value, "Unique Values")
+                self.assertEqual(overview_worksheet["A22"].value, "TXPA")
+                self.assertEqual(overview_worksheet["B22"].value, "Fails + Cpk<1.67")
+                self.assertEqual(overview_worksheet["A23"].value, "DPLL")
+                self.assertEqual(overview_worksheet["B23"].value, "OK")
+                self.assertEqual(overview_worksheet["A25"].value, "File summary")
                 self.assertEqual(len(data_rows), 1, "Expected exactly one affected test row in the smoke sample")
-                self.assertEqual(worksheet["G1"].value, "Status")
-                self.assertEqual(worksheet["G1"].fill.fgColor.rgb, "00FFF2CC")
+                self.assertEqual(worksheet["F1"].value, "Fail Chips")
+                self.assertEqual(worksheet["H1"].value, "Fails")
+                self.assertEqual(worksheet["H1"].fill.fgColor.rgb, "00FFFF00")
+                self.assertEqual(worksheet["I1"].value, "Cpk<1.67")
+                self.assertEqual(worksheet["L1"].value, "Multimodality")
+                self.assertEqual(worksheet["M1"].value, "Unique Values")
+                self.assertEqual(worksheet["H1"].alignment.horizontal, "center")
+                self.assertEqual(worksheet["H1"].alignment.vertical, "center")
+                self.assertEqual(worksheet["H1"].alignment.textRotation, 90)
                 self.assertEqual(plots_worksheet["C1"].value, "Wafer map (interactive HTML)")
                 self.assertEqual(plots_worksheet["D1"].value, "Wafer map (static PNG)")
-                self.assertEqual(plots_worksheet["C3"].value, "Open interactive wafer map")
+                self.assertEqual(plots_worksheet["E1"].value, "CDF by Site")
+                self.assertEqual(plots_worksheet["C3"].value, "Not generated")
                 self.assertEqual(plots_worksheet["D3"].value, "Open wafer PNG")
+                self.assertEqual(plots_worksheet["E3"].value, "Not generated")
 
-                row = data_rows[0]
-                self.assertEqual(row[0], "TXPA")
-                self.assertEqual(row[1], 520123)
-                self.assertEqual(row[2], "TXPA_OUTPUT_PWR")
-                self.assertEqual(row[6], "FAILS")
-                self.assertEqual(row[8], 2)
-                self.assertEqual(row[11], "View")
+                txpa_row = data_rows[0]
+                self.assertEqual(txpa_row[0], "TXPA")
+                self.assertEqual(txpa_row[1], 520123)
+                self.assertEqual(txpa_row[2], "TXPA_OUTPUT_PWR")
+                self.assertEqual(txpa_row[5], 2)
+                self.assertEqual(txpa_row[7], "YES")
+                self.assertEqual(txpa_row[8], "YES")
+                self.assertEqual(txpa_row[9], "NO")
+                self.assertEqual(txpa_row[10], "NO")
+                self.assertEqual(txpa_row[11], 1)
+                self.assertEqual(txpa_row[12], "YES")
+                self.assertEqual(txpa_row[16], "View")
             finally:
                 workbook.close()
 
@@ -133,16 +157,36 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 overview_cf_rules = list(overview_with_formatting.conditional_formatting)
                 self.assertTrue(cf_rules, "Expected conditional formatting rules in yield workbook")
                 self.assertTrue(
+                    any(str(rule.sqref) in {"F2", "F2:F2"} for rule in cf_rules),
+                    "Expected Fail Chips conditional formatting on column F",
+                )
+                self.assertTrue(
+                    any(str(rule.sqref) in {"H2", "H2:H2"} for rule in cf_rules),
+                    "Expected Fails YES/NO conditional formatting on column H",
+                )
+                self.assertTrue(
                     any(str(rule.sqref) in {"I2", "I2:I2"} for rule in cf_rules),
-                    "Expected Fail Chips conditional formatting on column I",
+                    "Expected Cpk<1.67 YES/NO conditional formatting on column I",
                 )
                 self.assertTrue(
-                    any(str(rule.sqref) in {"G21", "G21:G21"} for rule in overview_cf_rules),
-                    "Expected Top 10 issues fail-chip data bar formatting on column G",
+                    any(str(rule.sqref) in {"L2", "L2:L2"} for rule in cf_rules),
+                    "Expected Multimodality conditional formatting on column L",
+                )
+                self.assertEqual(worksheet_with_formatting["H2"].fill.fgColor.rgb, "00FFC7CE")
+                self.assertEqual(worksheet_with_formatting["I2"].fill.fgColor.rgb, "00FFC7CE")
+                self.assertEqual(worksheet_with_formatting["J2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["M2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["H"].width), 12.0)
+                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["I"].width), 12.0)
+                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["J"].width), 12.0)
+                self.assertGreater(float(worksheet_with_formatting.column_dimensions["C"].width), 12.0)
+                self.assertTrue(
+                    any(str(rule.sqref) in {"C22:C23", "C22:C23"} for rule in overview_cf_rules),
+                    "Expected module-level Fails color scale formatting on column C",
                 )
                 self.assertTrue(
-                    any(str(rule.sqref) in {"D25:D26", "D25:D26"} for rule in overview_cf_rules),
-                    "Expected Module summary total fail chips data bar formatting on column D",
+                    any(str(rule.sqref) in {"G22:G23", "G22:G23"} for rule in overview_cf_rules),
+                    "Expected module-level Unique Values color scale formatting on column G",
                 )
             finally:
                 workbook_with_formatting.close()
@@ -167,7 +211,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
 
                 self.assertGreaterEqual(len(click_targets), 2, "Expected clickable hyperlinks for embedded plots")
                 self.assertTrue(any(target.endswith(".png") for target in click_targets))
-                self.assertTrue(any(target.endswith(".html") for target in click_targets))
+                self.assertFalse(any(target.endswith(".html") for target in click_targets))
 
                 click_count = 0
                 for drawing_name in drawing_xml_names:

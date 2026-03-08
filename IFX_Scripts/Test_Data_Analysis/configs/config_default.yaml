@@ -1,16 +1,15 @@
 input_folder: PROD_Data
 output_folder: PROD_Data/Outputs
+convert_stdf_before_analysis: true
 modules:
-  - TXGE
-  - TXVC
+  - SCAN
+  - FUSE
+  - PSUP
+  - RCGX
   - DPLL
   - TXPA
-  - TXPB
-  - TXPC
-  - TXPD
-  - TXLO
-  - TXPS
-  - TXLK
+  - RXAD
+  - RXGT
 yield_threshold: 100.0
 cpk_low: 1.67
 cpk_high: 20.0

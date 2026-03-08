@@ -38,6 +38,10 @@ class MetaParsingUnitTests(unittest.TestCase):
         self.assertEqual(analysis._test_name_from_meta(self.meta, "530045"), "DPLL_LOCK_TIME")
         self.assertEqual(analysis._module_from_test_name("txpa_output_pwr"), "TXPA")
         self.assertEqual(analysis._module_from_test_name("ab"), "AB")
+        self.assertEqual(
+            analysis._shorten_test_name("DPLL_ElapsTime____S980 <> DPLL_ElapsTime____S980  -1"),
+            "DPLL_ElapsTime____S980",
+        )
 
         low, high, unit = analysis._limits_from_meta(self.meta, "520123")
         self.assertEqual(low, 9.5)
@@ -83,7 +87,7 @@ class StatusLogicUnitTests(unittest.TestCase):
             cpk_low=1.67,
             cpk_high=20.0,
         )
-        self.assertEqual(status, "FAILS")
+        self.assertEqual(status, "Fails + Cpk<1.67")
 
     def test_status_for_test_handles_cpk_limits_and_boundaries(self) -> None:
         self.assertEqual(
@@ -105,6 +109,17 @@ class StatusLogicUnitTests(unittest.TestCase):
                 cpk_high=20.0,
             ),
             "Cpk>20",
+        )
+        self.assertEqual(
+            analysis._status_for_test(
+                yield_pct=100.0,
+                cpk=20.0,
+                yield_threshold=100.0,
+                cpk_low=1.67,
+                cpk_high=20.0,
+                site_to_site_delta=True,
+            ),
+            "Site-to-Site Delta",
         )
         self.assertIsNone(
             analysis._status_for_test(
@@ -134,6 +149,92 @@ class StatusLogicUnitTests(unittest.TestCase):
             )
         )
 
+    def test_assess_test_metrics_detects_site_delta_and_unique_values(self) -> None:
+        sample_count = 90
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * 30) + ([1] * 30) + ([2] * 30),
+                "WAFER": (["W1"] * 45) + (["W2"] * 45),
+                "X": list(range(sample_count)),
+                "Y": [idx % 6 for idx in range(sample_count)],
+            }
+        )
+        series = pd.Series(([0.0, 1.0] * 15) + ([9.0, 10.0] * 15) + ([9.0, 10.0] * 15))
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="V",
+            yield_pct=100.0,
+            cpk=25.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+
+        self.assertIn(analysis.METRIC_CPK_HIGH, assessment.metric_keys)
+        self.assertIn(analysis.METRIC_SITE_DELTA, assessment.metric_keys)
+        self.assertIn(analysis.METRIC_UNIQUE_VALUES, assessment.metric_keys)
+        self.assertEqual(assessment.priority, "MEDIUM")
+
+    def test_assess_test_metrics_detects_multimodality_reason(self) -> None:
+        sample_count = 100
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * 50) + ([1] * 50),
+                "WAFER": (["W1"] * 50) + (["W2"] * 50),
+                "X": list(range(sample_count)),
+                "Y": [idx % 10 for idx in range(sample_count)],
+            }
+        )
+        series = pd.Series(([0.0] * 50) + ([8.0] * 50))
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="V",
+            yield_pct=100.0,
+            cpk=2.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+
+        self.assertIn(analysis.METRIC_UNIQUE_VALUES, assessment.metric_keys)
+        self.assertIn(analysis.METRIC_MULTIMODALITY, assessment.metric_keys)
+        self.assertEqual(assessment.priority, "MEDIUM")
+        self.assertGreaterEqual(assessment.peak_count, 2)
+        self.assertIsNotNone(assessment.multimodality_reason)
+
+    def test_unique_values_ignores_missing_and_hash_units(self) -> None:
+        digital_like = pd.Series(([0.0, 1.0] * 20), dtype=float)
+
+        unique_none, is_analog_none = analysis._unique_value_count(digital_like, unit=None)
+        self.assertIsNone(unique_none)
+        self.assertFalse(is_analog_none)
+
+        unique_hash, is_analog_hash = analysis._unique_value_count(digital_like, unit="#")
+        self.assertIsNone(unique_hash)
+        self.assertFalse(is_analog_hash)
+
+    def test_cdf_plot_by_site_creates_png_for_site_delta_data(self) -> None:
+        series = pd.Series([0.1, 0.2, 0.3, 1.1, 1.2, 1.3], dtype=float)
+        meta_cols = pd.DataFrame({"SITE_NUM": [0, 0, 0, 1, 1, 1]})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "site_cdf.png"
+            analysis._cdf_plot_by_site_png(
+                series,
+                meta_cols=meta_cols,
+                title="Example Test",
+                out_path=out_path,
+                low_limit=0.0,
+                high_limit=2.0,
+            )
+            self.assertTrue(out_path.exists())
+
 
 class CorrelationHelperUnitTests(unittest.TestCase):
     def test_safe_spearman_correlation_does_not_require_scipy(self) -> None:
@@ -159,6 +260,15 @@ class WaferNormalizationUnitTests(unittest.TestCase):
         self.assertTrue(pd.isna(normalized.iloc[5]))
         self.assertTrue(pd.isna(normalized.iloc[6]))
 
+        def test_supports_wafer_maps_excludes_packaged_and_q_files(self) -> None:
+            self.assertFalse(analysis._supports_wafer_maps("device_B11_sample.csv"))
+            self.assertFalse(analysis._supports_wafer_maps("device_HT_sample.csv"))
+            self.assertFalse(analysis._supports_wafer_maps("device_B21_sample.csv"))
+            self.assertFalse(analysis._supports_wafer_maps("device_RT_sample.csv"))
+            self.assertFalse(analysis._supports_wafer_maps("device_Q11_sample.csv"))
+            self.assertFalse(analysis._supports_wafer_maps("device_Q21_sample.csv"))
+            self.assertFalse(analysis._supports_wafer_maps("device_Q31_sample.csv"))
+            self.assertTrue(analysis._supports_wafer_maps("device_S21P_sample.csv"))
 
 class SheetNameUnitTests(unittest.TestCase):
     def test_unique_sheet_name_handles_truncation_collisions(self) -> None:

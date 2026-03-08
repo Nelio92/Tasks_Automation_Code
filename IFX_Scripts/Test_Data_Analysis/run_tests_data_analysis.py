@@ -4,6 +4,7 @@ import importlib
 from pathlib import Path
 from typing import Any
 import Tests_Data_Analysis as analysis
+import stdf_to_flat_csv
 
 
 TEST_DATA_ANALYSIS_ROOT = Path(__file__).resolve().parent
@@ -23,12 +24,29 @@ OPTIONAL_CONFIG_KEYS = {
     "correlation_methods",
     "pearson_abs_min_for_report",
     "wafermap_circle_area_mult",
+    "convert_stdf_before_analysis",
+    "stdf_single_file",
+    "stdf_file_patterns",
+    "stdf_input_folder",
 }
 ALLOWED_CONFIG_KEYS = REQUIRED_CONFIG_KEYS | OPTIONAL_CONFIG_KEYS
 
 
 class ConfigValidationError(ValueError):
     """Raised when a YAML configuration file fails schema validation."""
+
+
+def _progress_percent(current: int, total: int) -> int:
+    if total <= 0:
+        return 100
+    bounded = min(max(current, 0), total)
+    return int(round(100.0 * bounded / total))
+
+
+def _print_progress(stage: str, current: int, total: int, detail: str | None = None) -> None:
+    pct = _progress_percent(current, total)
+    suffix = "" if not detail else f" | {detail}"
+    print(f"[{stage}] {pct:3d}% ({current}/{total}){suffix}")
 
 
 def _resolve_from_test_data_analysis_root(path_value: str | Path) -> Path:
@@ -69,9 +87,23 @@ def _is_sequence_but_not_string(value: Any) -> bool:
     return isinstance(value, list | tuple)
 
 
+def _has_existing_csv_inputs(input_folder: Path | None, single_file: str | None) -> bool:
+    if input_folder is None or not input_folder.exists() or not input_folder.is_dir():
+        return False
+
+    if single_file:
+        csv_name = str(single_file)
+        if not csv_name.lower().endswith(".csv"):
+            csv_name = stdf_to_flat_csv.csv_name_for_source(csv_name)
+        return (input_folder / csv_name).is_file()
+
+    return any(path.is_file() for path in input_folder.glob("*.csv"))
+
+
 def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     errors: list[str] = []
     normalized: dict[str, Any] = {}
+    convert_stdf_before_analysis = bool(config.get("convert_stdf_before_analysis", False))
 
     unknown_keys = sorted(set(config) - ALLOWED_CONFIG_KEYS)
     if unknown_keys:
@@ -100,7 +132,12 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
         input_path = _resolve_from_test_data_analysis_root(input_folder)
         normalized["input_folder"] = input_path
         if not input_path.exists():
-            errors.append(f"input_folder does not exist: {input_path}")
+            if not convert_stdf_before_analysis:
+                errors.append(f"input_folder does not exist: {input_path}")
+            else:
+                input_parent = input_path.parent if input_path.parent != Path("") else Path(".")
+                if not input_parent.exists():
+                    errors.append(f"input_folder parent directory does not exist: {input_parent}")
         elif not input_path.is_dir():
             errors.append(f"input_folder is not a directory: {input_path}")
 
@@ -199,6 +236,38 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
         else:
             normalized["encoding"] = value.strip()
 
+    if "convert_stdf_before_analysis" in config:
+        value = config["convert_stdf_before_analysis"]
+        if not isinstance(value, bool):
+            errors.append("convert_stdf_before_analysis must be true or false")
+        else:
+            normalized["convert_stdf_before_analysis"] = value
+
+    if "stdf_input_folder" in config:
+        value = config["stdf_input_folder"]
+        if value not in (None, "", "null") and (not isinstance(value, str) or not value.strip()):
+            errors.append("stdf_input_folder must be a non-empty string or null")
+
+    if "stdf_single_file" in config:
+        value = config["stdf_single_file"]
+        if value in (None, "", "null"):
+            normalized["stdf_single_file"] = None
+        elif not isinstance(value, str):
+            errors.append("stdf_single_file must be a string or null")
+        else:
+            normalized["stdf_single_file"] = value.strip() or None
+
+    if "stdf_file_patterns" in config:
+        value = config["stdf_file_patterns"]
+        if not _is_sequence_but_not_string(value):
+            errors.append("stdf_file_patterns must be a list")
+        else:
+            patterns = [str(item).strip() for item in value if str(item).strip()]
+            if not patterns:
+                errors.append("stdf_file_patterns must contain at least one non-empty value")
+            else:
+                normalized["stdf_file_patterns"] = patterns
+
     if "generate_correlation_report" in config:
         value = config["generate_correlation_report"]
         if not isinstance(value, bool):
@@ -278,6 +347,84 @@ def _apply_config(config: dict[str, Any]) -> None:
         analysis.WAFERMAP_CIRCLE_AREA_MULT = float(config["wafermap_circle_area_mult"])
 
 
+def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
+    _print_progress(
+        "STDF conversion",
+        0,
+        1,
+        "checking whether STDF pre-conversion is required",
+    )
+    if not config.get("convert_stdf_before_analysis"):
+        _print_progress("STDF conversion", 1, 1, "disabled by configuration")
+        return
+
+    input_folder = Path(str(config["input_folder"]))
+    input_folder.mkdir(parents=True, exist_ok=True)
+
+    target_csv_name: str | None = None
+    if analysis.SINGLE_FILE:
+        target_csv_name = str(analysis.SINGLE_FILE)
+        if not target_csv_name.lower().endswith(".csv"):
+            target_csv_name = stdf_to_flat_csv.csv_name_for_source(target_csv_name)
+
+    existing_csvs = sorted(path for path in input_folder.glob("*.csv") if path.is_file())
+    skip_preconversion = False
+    if target_csv_name:
+        skip_preconversion = (input_folder / target_csv_name).is_file()
+    else:
+        skip_preconversion = bool(existing_csvs)
+
+    if skip_preconversion:
+        if target_csv_name:
+            analysis.SINGLE_FILE = target_csv_name
+            _print_progress(
+                "STDF conversion",
+                1,
+                1,
+                f"skipped; existing CSV already available ({target_csv_name})",
+            )
+            print(f"STDF pre-conversion skipped: existing CSV input already available in {input_folder} ({target_csv_name})")
+        else:
+            _print_progress(
+                "STDF conversion",
+                1,
+                1,
+                f"skipped; found {len(existing_csvs)} existing CSV input file(s)",
+            )
+            print(f"STDF pre-conversion skipped: found {len(existing_csvs)} existing CSV input file(s) in {input_folder}")
+        return
+
+    _print_progress("STDF conversion", 0, 1, "converting STDF files into CSV")
+    artifacts_folder = Path(str(config["output_folder"])) / "Artifacts"
+    summary = stdf_to_flat_csv.convert_stdf_folder(
+        input_folder=input_folder,
+        output_folder=input_folder,
+        patterns=list(config.get("stdf_file_patterns") or stdf_to_flat_csv.DEFAULT_PATTERNS),
+        single_file=config.get("stdf_single_file"),
+        max_files=analysis.MAX_FILES,
+        artifacts_output_folder=artifacts_folder,
+    )
+    if summary.converted_files == 0:
+        raise RuntimeError(f"No STDF files were converted from {input_folder}")
+
+    if analysis.SINGLE_FILE and not str(analysis.SINGLE_FILE).lower().endswith(".csv"):
+        analysis.SINGLE_FILE = stdf_to_flat_csv.csv_name_for_source(str(analysis.SINGLE_FILE))
+
+    _print_progress(
+        "STDF conversion",
+        1,
+        1,
+        f"completed; {summary.converted_files} file(s), {summary.converted_parts} part(s), {summary.converted_tests} numeric test column(s)",
+    )
+    if summary.dtr_files:
+        print(f"  DTR sidecar file(s): {len(summary.dtr_files)}")
+    if summary.consistency_files:
+        print(f"  Consistency report file(s): {len(summary.consistency_files)}")
+        print(f"  Artifacts folder: {artifacts_folder}")
+    for warning in summary.warnings:
+        print(f"  Warning: {warning}")
+
+
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Tests_Data_Analysis.py with a YAML config file")
     parser.add_argument(
@@ -298,9 +445,14 @@ def main() -> int:
     parser = _build_argument_parser()
     args = parser.parse_args()
 
+    workflow_total_steps = 4
+    _print_progress("Workflow", 0, workflow_total_steps, "starting launcher workflow")
+
     config_path = _resolve_config_path(args.config)
     config = _load_config(config_path)
+    _print_progress("Workflow", 1, workflow_total_steps, "configuration loaded and validated")
     _apply_config(config)
+    _print_progress("Workflow", 2, workflow_total_steps, "runtime configuration applied")
 
     resolved = {
         "INPUT_FOLDER": str(analysis.INPUT_FOLDER),
@@ -317,6 +469,9 @@ def main() -> int:
         "CORRELATION_METHODS": analysis.CORRELATION_METHODS,
         "PEARSON_ABS_MIN_FOR_REPORT": analysis.PEARSON_ABS_MIN_FOR_REPORT,
         "WAFERMAP_CIRCLE_AREA_MULT": analysis.WAFERMAP_CIRCLE_AREA_MULT,
+        "CONVERT_STDF_BEFORE_ANALYSIS": bool(config.get("convert_stdf_before_analysis", False)),
+        "STDF_SINGLE_FILE": config.get("stdf_single_file"),
+        "STDF_FILE_PATTERNS": list(config.get("stdf_file_patterns") or stdf_to_flat_csv.DEFAULT_PATTERNS),
     }
 
     print(f"Using config: {config_path}")
@@ -324,10 +479,16 @@ def main() -> int:
         print(f"  {key}: {value}")
 
     if args.dry_run:
+        _print_progress("Workflow", workflow_total_steps, workflow_total_steps, "dry-run completed")
         print("Dry-run mode: no analysis executed.")
         return 0
 
-    return int(analysis.run())
+    _prepare_stdf_inputs(config)
+    _print_progress("Workflow", 3, workflow_total_steps, "starting data analysis and report generation")
+
+    result = int(analysis.run())
+    _print_progress("Workflow", workflow_total_steps, workflow_total_steps, "workflow completed")
+    return result
 
 
 if __name__ == "__main__":

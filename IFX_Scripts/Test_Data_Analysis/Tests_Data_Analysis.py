@@ -407,15 +407,29 @@ def _autofit_openpyxl_columns(ws, *, min_width: int = 8, max_width: int = 70, pa
         start=1,
     ):
         max_len = 0
+        rotated_header = False
+        header_text = ""
         for cell in col_cells:
             if cell.value is None:
                 continue
+            if cell.row == 1:
+                alignment = getattr(cell, "alignment", None)
+                text_rotation = getattr(alignment, "textRotation", 0) if alignment is not None else 0
+                if text_rotation not in (0, None):
+                    rotated_header = True
+                    header_text = str(cell.value)
+                    continue
             text = str(cell.value)
             if "\n" in text:
                 text = max(text.splitlines(), key=len)
             max_len = max(max_len, len(text))
 
         width = max(min_width, min(max_width, max_len + padding))
+        if rotated_header:
+            compact_width = max(6, min(12, max_len + 2))
+            if max_len == 0 and header_text:
+                compact_width = max(6, min(12, len(header_text.split()[0]) + 2))
+            width = min(width, compact_width)
         ws.column_dimensions[_excel_col_letter(col_idx)].width = width
 
 
@@ -523,6 +537,28 @@ def scan_flat_file_meta(
     )
 
 
+def _is_analysis_input_csv_path(file_path: Path) -> bool:
+    name = file_path.name.lower()
+    return not name.endswith("_dtr_records.csv")
+
+
+def _collect_analysis_csv_paths(
+    input_folder: Path,
+    *,
+    single_file: str | None,
+    max_files: int | None,
+) -> list[Path]:
+    if single_file:
+        csv_paths = [input_folder / single_file]
+    else:
+        csv_paths = sorted(
+            [p for p in input_folder.glob("*.csv") if p.is_file() and _is_analysis_input_csv_path(p)]
+        )
+    if max_files is not None:
+        csv_paths = csv_paths[:max_files]
+    return csv_paths
+
+
 def _mad(values):
     import numpy as np
 
@@ -547,6 +583,14 @@ def _count_hist_peaks(values) -> int:
     v = values[np.isfinite(values)]
     if v.size < 80:
         return 1
+
+    rounded = np.round(v.astype(float), 9)
+    unique_vals, unique_counts = np.unique(rounded, return_counts=True)
+    if 2 <= unique_vals.size <= 10:
+        significant_mask = unique_counts >= max(3, int(math.ceil(0.10 * v.size)))
+        if int(np.count_nonzero(significant_mask)) >= 2:
+            return int(np.count_nonzero(significant_mask))
+
     q25, q75 = np.percentile(v, [25, 75])
     iqr = q75 - q25
     if iqr <= 0:
@@ -667,6 +711,71 @@ def _cdf_plot_png(
         ax.set_title(title + f"\nFail chips: {n_fail}/{v.size}")
     else:
         ax.set_title(title + f"\nFail chips: N/A (no spec limits)")
+    ax.set_xlabel("Value")
+    ax.set_ylabel("CDF")
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, format="png")
+    plt.close(fig)
+
+
+def _cdf_plot_by_site_png(
+    values,
+    *,
+    meta_cols,
+    title: str,
+    out_path: Path,
+    low_limit: float | None = None,
+    high_limit: float | None = None,
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    if meta_cols is None or "SITE_NUM" not in getattr(meta_cols, "columns", []):
+        return
+
+    df = pd.DataFrame(
+        {
+            "v": pd.to_numeric(values, errors="coerce"),
+            "SITE_NUM": pd.to_numeric(meta_cols["SITE_NUM"], errors="coerce"),
+        }
+    ).dropna(subset=["v", "SITE_NUM"])
+    if df.empty or df["SITE_NUM"].nunique() < 2:
+        return
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.2), dpi=140)
+    cmap = plt.get_cmap("tab10")
+    for idx, (site_num, group) in enumerate(df.groupby("SITE_NUM")):
+        site_values = np.sort(group["v"].to_numpy(dtype=float))
+        if site_values.size == 0:
+            continue
+        y = np.arange(1, site_values.size + 1) / site_values.size
+        site_label = _format_site_identifier(site_num)
+        ax.plot(
+            site_values,
+            y,
+            linewidth=1.6,
+            alpha=0.95,
+            color=cmap(idx % 10),
+            label=f"Site {site_label} (n={site_values.size})",
+        )
+
+    if low_limit is not None and math.isfinite(float(low_limit)):
+        ax.axvline(float(low_limit), color="#D62728", linestyle="-", linewidth=1.4, label=f"LTL={_fmt_num(float(low_limit))}")
+    if high_limit is not None and math.isfinite(float(high_limit)):
+        ax.axvline(float(high_limit), color="#D62728", linestyle="-", linewidth=1.4, label=f"UTL={_fmt_num(float(high_limit))}")
+
+    ax.grid(True, alpha=0.3)
+    ax.set_title(title + "\nDistribution grouped by site")
     ax.set_xlabel("Value")
     ax.set_ylabel("CDF")
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
@@ -1087,8 +1196,15 @@ def _parse_insertion_temperature_label(file_name: str) -> str:
     return "Unknown"
 
 
+def _supports_wafer_maps(file_name: str) -> bool:
+    upper = str(file_name).upper()
+    packaged_tokens = ("B11", "HT", "B21", "RT", "Q11", "Q21", "Q31")
+    return not any(token in upper for token in packaged_tokens)
+
+
 def _fmt_num(x: float) -> str:
     return f"{float(x):.6g}"
+
 
 def _normalize_wafer_ids(values):
     """Extract numeric wafer identifiers from mixed WAFER labels."""
@@ -1103,6 +1219,435 @@ def _normalize_wafer_ids(values):
 
 def _fmt_1dp(x: float) -> str:
     return f"{float(x):.1f}"
+
+
+METRIC_YIELD = "yield_fail"
+METRIC_CPK_LOW = "cpk_low"
+METRIC_CPK_HIGH = "cpk_high"
+METRIC_SITE_DELTA = "site_to_site_delta"
+METRIC_UNIQUE_VALUES = "unique_value_count"
+METRIC_MULTIMODALITY = "multimodality"
+
+METRIC_DISPLAY_ORDER: tuple[str, ...] = (
+    METRIC_YIELD,
+    METRIC_CPK_LOW,
+    METRIC_CPK_HIGH,
+    METRIC_SITE_DELTA,
+    METRIC_UNIQUE_VALUES,
+    METRIC_MULTIMODALITY,
+)
+
+METRIC_PRIORITY: dict[str, str] = {
+    METRIC_YIELD: "HIGH",
+    METRIC_CPK_LOW: "HIGH",
+    METRIC_CPK_HIGH: "MEDIUM",
+    METRIC_SITE_DELTA: "MEDIUM",
+    METRIC_UNIQUE_VALUES: "LOW",
+    METRIC_MULTIMODALITY: "MEDIUM",
+}
+
+PRIORITY_RANK: dict[str, int] = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "OK": 3}
+PRIORITY_FILL_COLORS: dict[str, str] = {
+    "HIGH": "F4CCCC",
+    "MEDIUM": "FFF2CC",
+    "LOW": "DDEBF7",
+    "OK": "C6E0B4",
+}
+
+_NON_ANALOG_UNIT_TOKENS = {
+    "",
+    "#",
+    "bin",
+    "bits",
+    "bit",
+    "bool",
+    "boolean",
+    "code",
+    "codes",
+    "count",
+    "counts",
+    "cnt",
+    "index",
+    "state",
+    "status",
+    "pass/fail",
+    "passfail",
+    "fail/pass",
+    "pf",
+    "logic",
+}
+
+MIN_SAMPLES_FOR_UNIQUE_VALUE_CHECK = 20
+MIN_SAMPLES_PER_SITE_FOR_SITE_DELTA = 5
+MIN_SITES_FOR_SITE_DELTA = 2
+
+
+@dataclass(frozen=True)
+class TestMetricAssessment:
+    metric_keys: tuple[str, ...]
+    status_text: str | None
+    priority: str
+    site_delta_sigma: float | None
+    worst_site: str | None
+    unique_value_count: int | None
+    is_analog_unit: bool
+    peak_count: int
+    multimodality_reason: str | None
+
+
+def _format_site_identifier(site_value: Any) -> str:
+    num = _to_float(site_value)
+    if num is None:
+        return str(site_value)
+    return str(int(num)) if float(num).is_integer() else _fmt_num(num)
+
+
+def _metric_label(
+    metric_key: str,
+    *,
+    yield_threshold: float,
+    cpk_low: float,
+    cpk_high: float,
+) -> str:
+    if metric_key == METRIC_YIELD:
+        return "Fails"
+    if metric_key == METRIC_CPK_LOW:
+        return f"Cpk<{cpk_low:g}"
+    if metric_key == METRIC_CPK_HIGH:
+        return f"Cpk>{cpk_high:g}"
+    if metric_key == METRIC_SITE_DELTA:
+        return "Site-to-Site Delta"
+    if metric_key == METRIC_UNIQUE_VALUES:
+        return "Unique Values"
+    if metric_key == METRIC_MULTIMODALITY:
+        return "Multimodality"
+    return metric_key
+
+
+def _sort_metric_keys(metric_keys: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for metric_key in METRIC_DISPLAY_ORDER:
+        if metric_key in metric_keys and metric_key not in seen:
+            ordered.append(metric_key)
+            seen.add(metric_key)
+    for metric_key in metric_keys:
+        if metric_key not in seen:
+            ordered.append(metric_key)
+            seen.add(metric_key)
+    return ordered
+
+
+def _status_text_from_metric_keys(
+    metric_keys: Iterable[str],
+    *,
+    yield_threshold: float,
+    cpk_low: float,
+    cpk_high: float,
+) -> str | None:
+    ordered = _sort_metric_keys(metric_keys)
+    if not ordered:
+        return None
+    return " + ".join(
+        _metric_label(
+            metric_key,
+            yield_threshold=yield_threshold,
+            cpk_low=cpk_low,
+            cpk_high=cpk_high,
+        )
+        for metric_key in ordered
+    )
+
+
+def _priority_from_metric_keys(metric_keys: Iterable[str]) -> str:
+    priorities = [METRIC_PRIORITY.get(metric_key, "LOW") for metric_key in metric_keys]
+    if not priorities:
+        return "OK"
+    return min(priorities, key=lambda item: PRIORITY_RANK.get(item, 999))
+
+
+def _priority_fill_color(priority: str) -> str:
+    return PRIORITY_FILL_COLORS.get(priority, PRIORITY_FILL_COLORS["OK"])
+
+
+def _is_analog_unit(unit: str | None) -> bool:
+    if unit is None:
+        return False
+    normalized = str(unit).strip().lower()
+    if not normalized:
+        return False
+    return normalized.replace(" ", "") not in _NON_ANALOG_UNIT_TOKENS
+
+
+def _site_delta_sigma(values, *, meta_cols) -> tuple[float | None, str | None]:
+    import numpy as np
+    import pandas as pd
+
+    if "SITE_NUM" not in getattr(meta_cols, "columns", []):
+        return None, None
+
+    df_site = pd.DataFrame(
+        {
+            "v": pd.to_numeric(values, errors="coerce"),
+            "SITE_NUM": pd.to_numeric(meta_cols["SITE_NUM"], errors="coerce"),
+        }
+    ).dropna(subset=["v", "SITE_NUM"])
+    if df_site.empty:
+        return None, None
+
+    site_counts = df_site.groupby("SITE_NUM")["v"].size()
+    eligible_sites = site_counts[site_counts >= MIN_SAMPLES_PER_SITE_FOR_SITE_DELTA].index
+    if len(eligible_sites) < MIN_SITES_FOR_SITE_DELTA:
+        return None, None
+    df_site = df_site[df_site["SITE_NUM"].isin(eligible_sites)].copy()
+
+    sigma_candidates: list[float] = []
+    robust_sigma = _robust_sigma(df_site["v"].to_numpy(dtype=float))
+    if np.isfinite(robust_sigma) and robust_sigma > 0.0:
+        sigma_candidates.append(float(robust_sigma))
+
+    within_site_sigma_values: list[float] = []
+    for _, group in df_site.groupby("SITE_NUM"):
+        if group.shape[0] < 2:
+            continue
+        std = float(group["v"].std(ddof=1))
+        if np.isfinite(std) and std > 0.0:
+            within_site_sigma_values.append(std)
+    if within_site_sigma_values:
+        pooled_within = float(np.sqrt(np.mean(np.square(within_site_sigma_values))))
+        if np.isfinite(pooled_within) and pooled_within > 0.0:
+            sigma_candidates.append(pooled_within)
+
+    sigma = max(sigma_candidates) if sigma_candidates else float(df_site["v"].std(ddof=1))
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        return None, None
+
+    global_mean = float(df_site["v"].mean())
+    mean_by_site = df_site.groupby("SITE_NUM")["v"].mean().sort_index()
+    deviations = ((mean_by_site - global_mean).abs() / sigma).dropna()
+    if deviations.empty:
+        return None, None
+
+    worst_site = deviations.idxmax()
+    return float(deviations.max()), _format_site_identifier(worst_site)
+
+
+def _unique_value_count(values, *, unit: str | None) -> tuple[int | None, bool]:
+    import pandas as pd
+
+    is_analog = _is_analog_unit(unit)
+    if not is_analog:
+        return None, False
+
+    series = pd.to_numeric(values, errors="coerce").dropna()
+    if series.empty:
+        return 0, True
+    if series.size < MIN_SAMPLES_FOR_UNIQUE_VALUE_CHECK:
+        return None, True
+    rounded = series.round(9)
+    unique_count = int(rounded.nunique(dropna=True))
+    if unique_count <= 1:
+        return unique_count, True
+
+    sorted_unique = sorted(float(value) for value in rounded.dropna().unique())
+    steps = [abs(curr - prev) for prev, curr in zip(sorted_unique, sorted_unique[1:], strict=False)]
+    regular_quantization = False
+    positive_steps = [step for step in steps if step > 0]
+    if positive_steps:
+        min_step = min(positive_steps)
+        max_step = max(positive_steps)
+        regular_quantization = min_step > 0 and max_step <= (1.5 * min_step)
+
+    if regular_quantization and unique_count >= 5:
+        return None, True
+    return unique_count, True
+
+
+def _classify_wafer_process_signature(values, *, meta_cols) -> str | None:
+    import numpy as np
+    import pandas as pd
+
+    if not all(col in getattr(meta_cols, "columns", []) for col in ("X", "Y")):
+        return None
+
+    df = pd.DataFrame(
+        {
+            "v": pd.to_numeric(values, errors="coerce"),
+            "X": pd.to_numeric(meta_cols["X"], errors="coerce"),
+            "Y": pd.to_numeric(meta_cols["Y"], errors="coerce"),
+        }
+    ).dropna()
+    if df.shape[0] < 20:
+        return None
+
+    center_x = float(df["X"].mean())
+    center_y = float(df["Y"].mean())
+    radius = np.sqrt((df["X"] - center_x) ** 2 + (df["Y"] - center_y) ** 2)
+    rho_r = _safe_spearman_correlation(df["v"], radius)
+    if rho_r is not None and np.isfinite(float(rho_r)) and abs(float(rho_r)) >= 0.35:
+        return "edge signature" if float(rho_r) > 0 else "center signature"
+
+    inner = radius <= float(radius.quantile(1 / 3))
+    outer = radius >= float(radius.quantile(2 / 3))
+    middle = ~(inner | outer)
+    sig = _robust_sigma(df["v"].to_numpy(dtype=float))
+    if sig > 0 and inner.any() and middle.any() and outer.any():
+        med_inner = float(df.loc[inner, "v"].median())
+        med_middle = float(df.loc[middle, "v"].median())
+        med_outer = float(df.loc[outer, "v"].median())
+        if abs(med_middle - med_inner) >= sig and abs(med_middle - med_outer) >= sig:
+            if (med_middle > med_inner and med_middle > med_outer) or (med_middle < med_inner and med_middle < med_outer):
+                return "donut / ring signature"
+
+    rho_x = _safe_spearman_correlation(df["v"], df["X"])
+    rho_y = _safe_spearman_correlation(df["v"], df["Y"])
+    if (
+        rho_x is not None
+        and np.isfinite(float(rho_x))
+        and abs(float(rho_x)) >= 0.35
+    ) or (
+        rho_y is not None
+        and np.isfinite(float(rho_y))
+        and abs(float(rho_y)) >= 0.35
+    ):
+        return "cluster / gradient signature"
+
+    return None
+
+
+def _detect_coordinate_signature(values, *, meta_cols) -> str | None:
+    import numpy as np
+    import pandas as pd
+
+    for axis in ("X", "Y"):
+        if axis not in getattr(meta_cols, "columns", []):
+            continue
+        coord = pd.to_numeric(meta_cols[axis], errors="coerce")
+        df_xy = pd.DataFrame({"v": pd.to_numeric(values, errors="coerce"), axis: coord}).dropna()
+        if df_xy.shape[0] < 50:
+            continue
+        rho = _safe_spearman_correlation(df_xy["v"], df_xy[axis])
+        if rho is not None and np.isfinite(rho) and abs(float(rho)) >= 0.30:
+            return f"spearman(v,{axis})={float(rho):+.2f}"
+    return None
+
+
+def _should_generate_interactive_wafer_map(values, *, meta_cols) -> bool:
+    return (
+        _classify_wafer_process_signature(values, meta_cols=meta_cols) is not None
+        or _detect_coordinate_signature(values, meta_cols=meta_cols) is not None
+    )
+
+
+def _infer_multimodality_reason(
+    values,
+    *,
+    meta_cols,
+    wafer_sig: str | None,
+    site_delta_sigma: float | None,
+    worst_site: str | None,
+) -> str | None:
+    import numpy as np
+    import pandas as pd
+
+    series = pd.to_numeric(values, errors="coerce")
+    finite = series.dropna().to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None
+
+    reasons: list[str] = []
+    if site_delta_sigma is not None and site_delta_sigma > 3.0 and worst_site is not None:
+        reasons.append(f"site-to-site variation (site {worst_site}, Δ={site_delta_sigma:.2f}σ)")
+
+    if "WAFER" in getattr(meta_cols, "columns", []):
+        df_w = pd.DataFrame({"v": series, "WAFER": _normalize_wafer_ids(meta_cols["WAFER"])}).dropna(subset=["v"])
+        if not df_w.empty and df_w["WAFER"].dropna().nunique() >= 2:
+            sigma = _robust_sigma(df_w["v"].to_numpy(dtype=float))
+            if sigma > 0:
+                mean_by_wafer = df_w.dropna(subset=["WAFER"]).groupby("WAFER")["v"].mean()
+                if not mean_by_wafer.empty:
+                    global_mean = float(df_w["v"].mean())
+                    wafer_shift = float(((mean_by_wafer - global_mean).abs() / sigma).max())
+                    if np.isfinite(wafer_shift) and wafer_shift >= 2.0:
+                        reasons.append("different wafers merged together")
+
+    wafer_process = _classify_wafer_process_signature(series, meta_cols=meta_cols)
+    if wafer_process:
+        reasons.append(f"wafer process signature ({wafer_process})")
+    elif wafer_sig and not reasons:
+        reasons.append(f"file wafer signature {wafer_sig}")
+
+    if not reasons:
+        reasons.append("mixed populations; site/wafer root cause not dominant")
+    return "; ".join(reasons[:2])
+
+
+def _assess_test_metrics(
+    *,
+    series,
+    meta_cols,
+    unit: str | None,
+    yield_pct: float | None,
+    cpk: float | None,
+    yield_threshold: float,
+    cpk_low: float,
+    cpk_high: float,
+    wafer_sig: str | None,
+) -> TestMetricAssessment:
+    import numpy as np
+    import pandas as pd
+
+    metric_keys: list[str] = []
+
+    if yield_pct is not None and yield_pct < yield_threshold:
+        metric_keys.append(METRIC_YIELD)
+    if cpk is not None and cpk < cpk_low:
+        metric_keys.append(METRIC_CPK_LOW)
+    if cpk is not None and cpk > cpk_high:
+        metric_keys.append(METRIC_CPK_HIGH)
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    finite = numeric.dropna().to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+
+    site_delta, worst_site = _site_delta_sigma(numeric, meta_cols=meta_cols)
+    if site_delta is not None and site_delta > 3.0:
+        metric_keys.append(METRIC_SITE_DELTA)
+
+    unique_values, is_analog = _unique_value_count(numeric, unit=unit)
+    if is_analog and unique_values is not None and unique_values < 10:
+        metric_keys.append(METRIC_UNIQUE_VALUES)
+
+    peak_count = _count_hist_peaks(finite) if finite.size else 0
+    multimodality_reason = None
+    if peak_count >= 2:
+        metric_keys.append(METRIC_MULTIMODALITY)
+        multimodality_reason = _infer_multimodality_reason(
+            numeric,
+            meta_cols=meta_cols,
+            wafer_sig=wafer_sig,
+            site_delta_sigma=site_delta,
+            worst_site=worst_site,
+        )
+
+    ordered_metric_keys = tuple(_sort_metric_keys(metric_keys))
+    return TestMetricAssessment(
+        metric_keys=ordered_metric_keys,
+        status_text=_status_text_from_metric_keys(
+            ordered_metric_keys,
+            yield_threshold=yield_threshold,
+            cpk_low=cpk_low,
+            cpk_high=cpk_high,
+        ),
+        priority=_priority_from_metric_keys(ordered_metric_keys),
+        site_delta_sigma=site_delta,
+        worst_site=worst_site,
+        unique_value_count=unique_values,
+        is_analog_unit=is_analog,
+        peak_count=peak_count,
+        multimodality_reason=multimodality_reason,
+    )
 
 
 def _build_plot_title(
@@ -1169,6 +1714,7 @@ def _build_comment(
     low_limit: float | None,
     high_limit: float | None,
     wafer_sig: str | None,
+    metric_assessment: TestMetricAssessment,
 ) -> str:
     import numpy as np
     import pandas as pd
@@ -1197,10 +1743,24 @@ def _build_comment(
         if robust_cv >= 0.05:
             parts.append(f"Large spread (robust CV={robust_cv:.2%})")
 
+    if metric_assessment.site_delta_sigma is not None and metric_assessment.site_delta_sigma > 3.0:
+        if metric_assessment.worst_site is not None:
+            parts.append(
+                "Site-to-site delta "
+                f"(site {metric_assessment.worst_site}, Δ={metric_assessment.site_delta_sigma:.2f}σ)"
+            )
+        else:
+            parts.append(f"Site-to-site delta (Δ={metric_assessment.site_delta_sigma:.2f}σ)")
+
+    if metric_assessment.is_analog_unit and metric_assessment.unique_value_count is not None:
+        if metric_assessment.unique_value_count < 10:
+            parts.append(f"Analog unique values low ({metric_assessment.unique_value_count})")
+
     # Multi-modality heuristic.
-    peaks = _count_hist_peaks(finite)
-    if peaks >= 2:
-        parts.append(f"Possible multi-modal distribution (peaks≈{peaks})")
+    if metric_assessment.peak_count >= 2:
+        parts.append(f"Possible multi-modal distribution (peaks≈{metric_assessment.peak_count})")
+        if metric_assessment.multimodality_reason:
+            parts.append(f"Multimodality reason: {metric_assessment.multimodality_reason}")
 
     # Site effect heuristic.
     if "SITE_NUM" in meta_cols.columns:
@@ -1228,15 +1788,9 @@ def _build_comment(
             if sig > 0 and rng / sig >= 3.0:
                 parts.append("Wafer signature suspected (median shifts across wafers)")
 
-    # Coordinate signature (very lightweight).
-    for axis in ("X", "Y"):
-        if axis in meta_cols.columns:
-            coord = pd.to_numeric(meta_cols[axis], errors="coerce")
-            df_xy = pd.DataFrame({"v": vals, axis: coord}).dropna()
-            if df_xy.shape[0] >= 50:
-                rho = _safe_spearman_correlation(df_xy["v"], df_xy[axis])
-                if rho is not None and np.isfinite(rho) and abs(float(rho)) >= 0.30:
-                    parts.append(f"Coordinate signature: spearman(v,{axis})={float(rho):+.2f}")
+    coordinate_signature = _detect_coordinate_signature(vals, meta_cols=meta_cols)
+    if coordinate_signature:
+        parts.append(f"Coordinate signature: {coordinate_signature}")
 
     # Fail clustering note.
     if low_limit is not None or high_limit is not None:
@@ -1288,8 +1842,17 @@ def _yield_cpk_from_meta(meta: FlatFileMeta, test_col: str) -> tuple[float | Non
     return _to_float(y_raw), _to_float(c_raw)
 
 
+def _shorten_test_name(test_name: str | None) -> str:
+    raw = "" if test_name is None else str(test_name)
+    cleaned = raw.strip().strip('"')
+    if not cleaned:
+        return ""
+    primary, _, _ = cleaned.partition("<>")
+    return primary.strip()
+
+
 def _test_name_from_meta(meta: FlatFileMeta, test_col: str) -> str:
-    return (meta.meta_rows.get("Test Name", {}).get(test_col) or "").strip().strip('"')
+    return _shorten_test_name(meta.meta_rows.get("Test Name", {}).get(test_col))
 
 
 def _status_for_test(
@@ -1299,14 +1862,29 @@ def _status_for_test(
     yield_threshold: float,
     cpk_low: float,
     cpk_high: float,
+    site_to_site_delta: bool = False,
+    unique_value_count_low: bool = False,
+    multimodality: bool = False,
 ) -> str | None:
+    metric_keys: list[str] = []
     if yield_pct is not None and yield_pct < yield_threshold:
-        return "FAILS"
+        metric_keys.append(METRIC_YIELD)
     if cpk is not None and cpk < cpk_low:
-        return f"Cpk<{cpk_low:g}"
+        metric_keys.append(METRIC_CPK_LOW)
     if cpk is not None and cpk > cpk_high:
-        return f"Cpk>{cpk_high:g}"
-    return None
+        metric_keys.append(METRIC_CPK_HIGH)
+    if site_to_site_delta:
+        metric_keys.append(METRIC_SITE_DELTA)
+    if unique_value_count_low:
+        metric_keys.append(METRIC_UNIQUE_VALUES)
+    if multimodality:
+        metric_keys.append(METRIC_MULTIMODALITY)
+    return _status_text_from_metric_keys(
+        metric_keys,
+        yield_threshold=yield_threshold,
+        cpk_low=cpk_low,
+        cpk_high=cpk_high,
+    )
 
 
 def _proposed_sigma_limits(values) -> tuple[float | None, float | None, float | None, float | None]:
@@ -1348,10 +1926,10 @@ def _add_overview_sheet(
     processed_files: list[str],
     output_folder: Path,
 ) -> None:
-    from collections import Counter, defaultdict
+    from collections import Counter
     from datetime import datetime
 
-    from openpyxl.formatting.rule import DataBarRule
+    from openpyxl.formatting.rule import ColorScaleRule
     from openpyxl.styles import Font, PatternFill
 
     if "Overview" in workbook.sheetnames:
@@ -1363,17 +1941,21 @@ def _add_overview_sheet(
     title_fill = PatternFill(patternType="solid", fgColor="D9EAD3")
     section_fill = PatternFill(patternType="solid", fgColor="DDEBF7")
     link_font = Font(color="0000EE", underline="single")
-    traffic_fills = {
-        "GREEN": PatternFill(patternType="solid", fgColor="C6E0B4"),
-        "YELLOW": PatternFill(patternType="solid", fgColor="FFE699"),
-        "RED": PatternFill(patternType="solid", fgColor="F4CCCC"),
+    priority_fills = {
+        priority: PatternFill(patternType="solid", fgColor=_priority_fill_color(priority))
+        for priority in ("HIGH", "MEDIUM", "LOW", "OK")
     }
 
     ws["A1"] = "Test Data Analysis Overview"
     ws["A1"].font = Font(bold=True, size=16)
     ws["A1"].fill = title_fill
 
-    status_counts = Counter(entry["status"] for entry in summary_entries)
+    metric_counts = Counter(
+        metric_key
+        for entry in summary_entries
+        for metric_key in entry.get("metric_keys", [])
+    )
+    priority_counts = Counter(str(entry.get("priority") or "OK") for entry in summary_entries)
     files_with_issues = sorted({entry["file_name"] for entry in summary_entries})
     total_fail_chips = int(sum(int(entry.get("fail_chips") or 0) for entry in summary_entries))
 
@@ -1384,9 +1966,15 @@ def _add_overview_sheet(
         ("Files with issues", len(files_with_issues)),
         ("Affected tests", len(summary_entries)),
         ("Total fail chips", total_fail_chips),
-        ("Tests with status=FAILS", int(status_counts.get("FAILS", 0))),
-        ("Low Cpk count", int(sum(1 for key, count in status_counts.items() if str(key).startswith("Cpk<") for _ in range(count)))),
-        ("High Cpk count", int(sum(1 for key, count in status_counts.items() if str(key).startswith("Cpk>") for _ in range(count)))),
+        ("High-priority tests", int(priority_counts.get("HIGH", 0))),
+        ("Medium-priority tests", int(priority_counts.get("MEDIUM", 0))),
+        ("Low-priority tests", int(priority_counts.get("LOW", 0))),
+        ("Fails count", int(metric_counts.get(METRIC_YIELD, 0))),
+        ("Cpk<1.67 count", int(metric_counts.get(METRIC_CPK_LOW, 0))),
+        ("Cpk>20 count", int(metric_counts.get(METRIC_CPK_HIGH, 0))),
+        ("Site-to-Site Delta count", int(metric_counts.get(METRIC_SITE_DELTA, 0))),
+        ("Unique Values count", int(metric_counts.get(METRIC_UNIQUE_VALUES, 0))),
+        ("Multimodality count", int(metric_counts.get(METRIC_MULTIMODALITY, 0))),
     ]
     for row_idx, (label, value) in enumerate(summary_rows, start=3):
         ws.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
@@ -1408,7 +1996,9 @@ def _add_overview_sheet(
         seen_modules.add(normalized)
 
     module_summary: dict[str, dict[str, int]] = {
-        module_name: {"affected": 0, "fails": 0, "low_cpk": 0, "high_cpk": 0, "fail_chips": 0}
+        module_name: {
+            **{metric_key: 0 for metric_key in METRIC_DISPLAY_ORDER},
+        }
         for module_name in configured_modules
     }
     for entry in summary_entries:
@@ -1417,146 +2007,72 @@ def _add_overview_sheet(
             continue
         item = module_summary.setdefault(
             module_name,
-            {"affected": 0, "fails": 0, "low_cpk": 0, "high_cpk": 0, "fail_chips": 0},
+            {
+                **{metric_key: 0 for metric_key in METRIC_DISPLAY_ORDER},
+            },
         )
-        item["affected"] += 1
-        status = str(entry.get("status") or "")
-        if status == "FAILS":
-            item["fails"] += 1
-        elif status.startswith("Cpk<"):
-            item["low_cpk"] += 1
-        elif status.startswith("Cpk>"):
-            item["high_cpk"] += 1
-        item["fail_chips"] += int(entry.get("fail_chips") or 0)
+        for metric_key in entry.get("metric_keys", []):
+            item[metric_key] += 1
 
-    row_cursor = 14
-    ws.cell(row=row_cursor, column=1, value="Module traffic-light summary").font = Font(bold=True, size=12)
+    row_cursor = 20
+    ws.cell(row=row_cursor, column=1, value="Module level summary").font = Font(bold=True, size=12)
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
     traffic_headers = [
         "Module",
         "Overall",
-        "Affected tests",
-        "Tests with status=FAILS",
-        "Low Cpk",
-        "High Cpk",
-        "Total fail chips",
+        "Fails",
+        "Cpk<1.67",
+        "Cpk>20",
+        "Site-to-Site Delta",
+        "Unique Values",
+        "Multimodality",
     ]
     for col_idx, header in enumerate(traffic_headers, start=1):
         cell = ws.cell(row=row_cursor, column=col_idx, value=header)
         cell.font = Font(bold=True)
+    module_metric_header_row = row_cursor
     row_cursor += 1
 
     for module_name in configured_modules:
         item = module_summary[module_name]
-        if item["fails"] > 0:
-            overall = "RED"
-        elif item["affected"] > 0:
-            overall = "YELLOW"
-        else:
-            overall = "GREEN"
+        module_metric_keys = [metric_key for metric_key in METRIC_DISPLAY_ORDER if item.get(metric_key, 0) > 0]
+        overall = _status_text_from_metric_keys(
+            module_metric_keys,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+        ) or "OK"
+        overall_priority = _priority_from_metric_keys(module_metric_keys)
 
         ws.cell(row=row_cursor, column=1, value=module_name)
         status_cell = ws.cell(row=row_cursor, column=2, value=overall)
         status_cell.font = Font(bold=True)
-        status_cell.fill = traffic_fills[overall]
-        ws.cell(row=row_cursor, column=3, value=item["affected"])
-        ws.cell(row=row_cursor, column=4, value=item["fails"])
-        ws.cell(row=row_cursor, column=5, value=item["low_cpk"])
-        ws.cell(row=row_cursor, column=6, value=item["high_cpk"])
-        ws.cell(row=row_cursor, column=7, value=item["fail_chips"])
+        status_cell.fill = priority_fills[overall_priority]
+        for metric_offset, metric_key in enumerate(METRIC_DISPLAY_ORDER, start=3):
+            ws.cell(row=row_cursor, column=metric_offset, value=item[metric_key])
         row_cursor += 1
 
-    row_cursor += 1
-    ws.cell(row=row_cursor, column=1, value="Top 10 issues").font = Font(bold=True, size=12)
-    ws.cell(row=row_cursor, column=1).fill = section_fill
-    row_cursor += 1
-    top_headers = ["Rank", "File", "Module", "Test Nr", "Test Name", "Status", "Fail Chips", "Yield (%)", "Cpk", "Detail"]
-    for col_idx, header in enumerate(top_headers, start=1):
-        cell = ws.cell(row=row_cursor, column=col_idx, value=header)
-        cell.font = Font(bold=True)
-    top_header_row = row_cursor
-    row_cursor += 1
-
-    def _sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
-        status = str(item.get("status") or "")
-        severity = 0 if status == "FAILS" else (1 if status.startswith("Cpk<") else 2)
-        fail_chips = int(item.get("fail_chips") or 0)
-        yield_pct = item.get("yield_pct")
-        yield_score = 101.0 if yield_pct is None else float(yield_pct)
-        cpk = item.get("cpk")
-        cpk_score = 9999.0 if cpk is None else float(cpk)
-        return (severity, -fail_chips, yield_score, cpk_score, str(item.get("file_name") or ""), str(item.get("test_name") or ""))
-
-    top_entries = sorted(summary_entries, key=_sort_key)[:10]
-    for rank, entry in enumerate(top_entries, start=1):
-        values = [
-            rank,
-            entry["file_name"],
-            entry["module"],
-            entry["test_col"],
-            entry["test_name"],
-            entry["status"],
-            entry["fail_chips"],
-            entry["yield_pct"],
-            entry["cpk"],
-            "Open",
-        ]
-        for col_idx, value in enumerate(values, start=1):
-            ws.cell(row=row_cursor, column=col_idx, value=value)
-        detail_cell = ws.cell(row=row_cursor, column=10)
-        detail_cell.hyperlink = entry["detail_link"]
-        detail_cell.font = link_font
-        row_cursor += 1
-
-    top_issue_start_row = top_header_row + 1
-    top_issue_end_row = row_cursor - 1
-    if top_issue_end_row >= top_issue_start_row:
-        ws.conditional_formatting.add(
-            f"G{top_issue_start_row}:G{top_issue_end_row}",
-            DataBarRule(
-                start_type="num",
-                start_value=0,
-                end_type="max",
-                color="FF0000",
-                showValue=True,
-            ),
-        )
-
-    row_cursor += 1
-    ws.cell(row=row_cursor, column=1, value="Module summary").font = Font(bold=True, size=12)
-    ws.cell(row=row_cursor, column=1).fill = section_fill
-    row_cursor += 1
-    module_headers = ["Module", "Affected tests", "Tests with status=FAILS", "Total fail chips"]
-    for col_idx, header in enumerate(module_headers, start=1):
-        cell = ws.cell(row=row_cursor, column=col_idx, value=header)
-        cell.font = Font(bold=True)
-    module_header_row = row_cursor
-    row_cursor += 1
-
-    for module_name in configured_modules:
-        item = module_summary[module_name]
-        ws.append([module_name, item["affected"], item["fails"], item["fail_chips"]])
-
-    module_summary_start_row = module_header_row + 1
-    module_summary_end_row = ws.max_row
-    if module_summary_end_row >= module_summary_start_row:
-        ws.conditional_formatting.add(
-            f"D{module_summary_start_row}:D{module_summary_end_row}",
-            DataBarRule(
-                start_type="num",
-                start_value=0,
-                end_type="max",
-                color="FF0000",
-                showValue=True,
-            ),
-        )
+    module_metric_start_row = module_metric_header_row + 1
+    module_metric_end_row = row_cursor - 1
+    if module_metric_end_row >= module_metric_start_row:
+        for col_idx in range(3, 9):
+            col_letter = _excel_col_letter(col_idx)
+            ws.conditional_formatting.add(
+                f"{col_letter}{module_metric_start_row}:{col_letter}{module_metric_end_row}",
+                ColorScaleRule(
+                    start_type="min",
+                    start_color="FFFFFF",
+                    end_type="max",
+                    end_color="F8696B",
+                ),
+            )
 
     row_cursor = ws.max_row + 2
     ws.cell(row=row_cursor, column=1, value="File summary").font = Font(bold=True, size=12)
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
-    file_headers = ["File", "Affected tests", "Tests with status=FAILS", "Total fail chips", "Data sheet", "Plots sheet"]
+    file_headers = ["File", "Affected tests", "High priority", "Medium priority", "Low priority", "Total fail chips", "Data sheet", "Plots sheet"]
     for col_idx, header in enumerate(file_headers, start=1):
         cell = ws.cell(row=row_cursor, column=col_idx, value=header)
         cell.font = Font(bold=True)
@@ -1569,27 +2085,32 @@ def _add_overview_sheet(
             file_name,
             {
                 "affected": 0,
-                "fails": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
                 "fail_chips": 0,
                 "sheet_name": entry["sheet_name"],
                 "plots_sheet_name": entry["plots_sheet_name"],
             },
         )
         item["affected"] += 1
-        if str(entry["status"]) == "FAILS":
-            item["fails"] += 1
+        priority = str(entry.get("priority") or "OK").lower()
+        if priority in {"high", "medium", "low"}:
+            item[priority] += 1
         item["fail_chips"] += int(entry.get("fail_chips") or 0)
 
     for file_name in sorted(file_summary):
         item = file_summary[file_name]
         ws.cell(row=row_cursor, column=1, value=file_name)
         ws.cell(row=row_cursor, column=2, value=item["affected"])
-        ws.cell(row=row_cursor, column=3, value=item["fails"])
-        ws.cell(row=row_cursor, column=4, value=item["fail_chips"])
-        data_cell = ws.cell(row=row_cursor, column=5, value="Open")
+        ws.cell(row=row_cursor, column=3, value=item["high"])
+        ws.cell(row=row_cursor, column=4, value=item["medium"])
+        ws.cell(row=row_cursor, column=5, value=item["low"])
+        ws.cell(row=row_cursor, column=6, value=item["fail_chips"])
+        data_cell = ws.cell(row=row_cursor, column=7, value="Open")
         data_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['sheet_name']))}!A1"
         data_cell.font = link_font
-        plots_cell = ws.cell(row=row_cursor, column=6, value="Open")
+        plots_cell = ws.cell(row=row_cursor, column=8, value="Open")
         plots_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['plots_sheet_name']))}!A1"
         plots_cell.font = link_font
         row_cursor += 1
@@ -1615,19 +2136,18 @@ def generate_yield_cpk_report(
     import pandas as pd
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as XLImage
-    from openpyxl.formatting.rule import ColorScaleRule
-    from openpyxl.styles import Font, PatternFill
+    from openpyxl.formatting.rule import ColorScaleRule, FormulaRule
+    from openpyxl.styles import Alignment, Font, PatternFill
 
     output_folder.mkdir(parents=True, exist_ok=True)
     plots_root = output_folder / "cdf_plots"
     plots_root.mkdir(parents=True, exist_ok=True)
 
-    if single_file:
-        csv_paths = [input_folder / single_file]
-    else:
-        csv_paths = sorted([p for p in input_folder.glob("*.csv") if p.is_file()])
-    if max_files is not None:
-        csv_paths = csv_paths[:max_files]
+    csv_paths = _collect_analysis_csv_paths(
+        input_folder,
+        single_file=single_file,
+        max_files=max_files,
+    )
     if not csv_paths:
         raise SystemExit(f"No .csv files found in: {input_folder}")
 
@@ -1666,41 +2186,14 @@ def generate_yield_cpk_report(
             _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
-        # Identify affected tests based on Yield/Cpk thresholds.
-        affected: list[str] = []
-        status_by_col: dict[str, str] = {}
         yield_by_col: dict[str, float | None] = {}
         cpk_by_col: dict[str, float | None] = {}
-        for test_col in interest_cols:
-            y, c = _yield_cpk_from_meta(meta, test_col)
-            yield_by_col[test_col] = y
-            cpk_by_col[test_col] = c
-            status = _status_for_test(
-                yield_pct=y,
-                cpk=c,
-                yield_threshold=yield_threshold,
-                cpk_low=cpk_low,
-                cpk_high=cpk_high,
-            )
-            if status:
-                affected.append(test_col)
-                status_by_col[test_col] = status
-
-        # Group affected tests by module for readability/formatting.
-        affected.sort(key=lambda c: (interest_modules.get(c, ""), int(c)))
-
-        if not affected:
-            print("  - No affected tests (per thresholds); skipping sheet")
-            _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
-            continue
-
-        # Load only needed columns from unit data.
         wanted_meta_cols = [
             c
             for c in ("SITE_NUM", "WAFER", "X", "Y", "LOT", "SUBLOT", "CHIP_ID", "PF", "FIRST_FAIL_TEST")
             if c in meta.header
         ]
-        usecols = wanted_meta_cols + affected
+        usecols = wanted_meta_cols + interest_cols
         df_units = _read_unit_data(
             file_path,
             data_start_line_index=meta.data_start_line_index,
@@ -1708,8 +2201,37 @@ def generate_yield_cpk_report(
             encoding=encoding,
         )
 
-        # Ensure meta col dataframe aligns to series indices for comment generation.
+        # Ensure meta col dataframe aligns to series indices for metric/comment generation.
         meta_cols_df = df_units[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=df_units.index)
+
+        affected: list[str] = []
+        assessment_by_col: dict[str, TestMetricAssessment] = {}
+        for test_col in interest_cols:
+            y, c = _yield_cpk_from_meta(meta, test_col)
+            yield_by_col[test_col] = y
+            cpk_by_col[test_col] = c
+            _, _, unit = _limits_from_meta(meta, test_col)
+            assessment = _assess_test_metrics(
+                series=df_units[test_col],
+                meta_cols=meta_cols_df,
+                unit=unit,
+                yield_pct=y,
+                cpk=c,
+                yield_threshold=yield_threshold,
+                cpk_low=cpk_low,
+                cpk_high=cpk_high,
+                wafer_sig=wafer_sig,
+            )
+            assessment_by_col[test_col] = assessment
+            if assessment.status_text:
+                affected.append(test_col)
+
+        affected.sort(key=lambda c: (interest_modules.get(c, ""), int(c)))
+
+        if not affected:
+            print("  - No affected tests (per all configured metrics); skipping sheet")
+            _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
+            continue
 
         # Create sheets.
         sheet_name = _unique_sheet_name(file_path.stem, wb.sheetnames)
@@ -1727,10 +2249,15 @@ def generate_yield_cpk_report(
             "Test Name",
             "Unit",
             "Yield (%)",
-            "Cpk",
-            "Status",
-            "N",
             "Fail Chips",
+            "Cpk",
+            "Fails",
+            "Cpk<1.67",
+            "Cpk>20",
+            "Site-to-Site Delta",
+            "Multimodality",
+            "Unique Values",
+            "N",
             "Outliers",
             "Comment",
             "CDF Plot",
@@ -1742,21 +2269,37 @@ def generate_yield_cpk_report(
             "UTL 12s",
         ]
         ws.append(headers)
+        metric_header_fill = PatternFill(patternType="solid", fgColor="FFFF00")
+        rotated_metric_alignment = Alignment(horizontal="center", vertical="center", textRotation=90)
         for cell in ws[1]:
             cell.font = Font(bold=True)
-        status_header_fill = PatternFill(patternType="solid", fgColor="FFF2CC")
-        ws.cell(row=1, column=headers.index("Status") + 1).fill = status_header_fill
+        metric_header_names = {
+            "Fails",
+            "Cpk<1.67",
+            "Cpk>20",
+            "Site-to-Site Delta",
+            "Multimodality",
+            "Unique Values",
+        }
+        for col_idx, header in enumerate(headers, start=1):
+            if header in metric_header_names:
+                header_cell = ws.cell(row=1, column=col_idx)
+                header_cell.fill = metric_header_fill
+                header_cell.alignment = rotated_metric_alignment
+        ws.row_dimensions[1].height = 72
 
         ws_plots.append([
             "Test",
             "CDF (fails highlighted)",
             "Wafer map (interactive HTML)",
             "Wafer map (static PNG)",
+            "CDF by Site",
         ])
         ws_plots["A1"].font = Font(bold=True)
         ws_plots["B1"].font = Font(bold=True)
         ws_plots["C1"].font = Font(bold=True)
         ws_plots["D1"].font = Font(bold=True)
+        ws_plots["E1"].font = Font(bold=True)
 
         plot_anchor_row = 3
         out_rows = 0
@@ -1773,7 +2316,9 @@ def generate_yield_cpk_report(
             low, high, unit = _limits_from_meta(meta, test_col)
             y = yield_by_col.get(test_col)
             c = cpk_by_col.get(test_col)
-            status = status_by_col[test_col]
+            assessment = assessment_by_col[test_col]
+            status = assessment.status_text or ""
+            metric_key_set = set(assessment.metric_keys)
 
             series = df_units[test_col]
             numeric = pd.to_numeric(series, errors="coerce")
@@ -1805,12 +2350,15 @@ def generate_yield_cpk_report(
                 low_limit=low,
                 high_limit=high,
                 wafer_sig=wafer_sig,
+                metric_assessment=assessment,
             )
 
             # Plot file and embed in plot sheet.
             safe_test = re.sub(r"[^A-Za-z0-9._-]+", "_", test_name)[:80] or test_col
             plot_path = plots_root / file_path.stem / f"{test_col}_{safe_test}.png"
-            include_sigma_limits = status.startswith("Cpk<") or status.startswith("Cpk>")
+            include_sigma_limits = (
+                METRIC_CPK_LOW in assessment.metric_keys or METRIC_CPK_HIGH in assessment.metric_keys
+            )
             title = _build_plot_title(
                 test_name=test_name,
                 test_col=test_col,
@@ -1831,28 +2379,45 @@ def generate_yield_cpk_report(
                 proposed_u12=(u12 if include_sigma_limits else None),
             )
 
+            wafer_maps_supported = _supports_wafer_maps(file_path.name)
             wafer_map_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.png"
-            _wafer_map_png(
-                numeric,
-                meta_cols=meta_cols_df,
-                title=f"{test_name} ({test_col}) | {temp_label}",
-                out_path=wafer_map_path,
-                low_limit=low,
-                high_limit=high,
-                unit=unit,
-                median_v=float(np.median(finite)),
-            )
+            if wafer_maps_supported:
+                _wafer_map_png(
+                    numeric,
+                    meta_cols=meta_cols_df,
+                    title=f"{test_name} ({test_col}) | {temp_label}",
+                    out_path=wafer_map_path,
+                    low_limit=low,
+                    high_limit=high,
+                    unit=unit,
+                    median_v=float(np.median(finite)),
+                )
             wafer_map_html_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.html"
-            _wafer_map_html(
+            generate_interactive_wafer_map = wafer_maps_supported and _should_generate_interactive_wafer_map(
                 numeric,
                 meta_cols=meta_cols_df,
-                title=f"{test_name} ({test_col}) | {temp_label}",
-                out_path=wafer_map_html_path,
-                low_limit=low,
-                high_limit=high,
-                unit=unit,
-                median_v=float(np.median(finite)),
             )
+            if generate_interactive_wafer_map:
+                _wafer_map_html(
+                    numeric,
+                    meta_cols=meta_cols_df,
+                    title=f"{test_name} ({test_col}) | {temp_label}",
+                    out_path=wafer_map_html_path,
+                    low_limit=low,
+                    high_limit=high,
+                    unit=unit,
+                    median_v=float(np.median(finite)),
+                )
+            site_cdf_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_cdf_by_site.png"
+            if METRIC_SITE_DELTA in metric_key_set:
+                _cdf_plot_by_site_png(
+                    numeric,
+                    meta_cols=meta_cols_df,
+                    title=title,
+                    out_path=site_cdf_path,
+                    low_limit=low,
+                    high_limit=high,
+                )
 
             # Write to plots sheet.
             ws_plots[f"A{plot_anchor_row}"] = f"{test_col} {test_name}"
@@ -1868,24 +2433,36 @@ def generate_yield_cpk_report(
                 plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(plot_uri)
 
             wafer_link = ws_plots[f"C{plot_anchor_row}"]
-            wafer_link.value = "Open interactive wafer map"
-            wafer_click_path = wafer_map_html_path if wafer_map_html_path.exists() else wafer_map_path
-            if wafer_click_path.exists():
-                wafer_uri = wafer_click_path.resolve().as_uri()
+            if not wafer_maps_supported:
+                wafer_link.value = "Not applicable"
+            else:
+                wafer_link.value = "Open interactive wafer map" if wafer_map_html_path.exists() else "Not generated"
+            wafer_uri = None
+            if wafer_map_html_path.exists():
+                wafer_uri = wafer_map_html_path.resolve().as_uri()
                 wafer_link.hyperlink = wafer_uri
                 wafer_link.font = Font(color="0000EE", underline="single")
-            else:
-                wafer_uri = None
 
             wafer_png_link = ws_plots[f"D{plot_anchor_row}"]
-            wafer_png_link.value = "Open wafer PNG"
+            wafer_png_link.value = "Not applicable" if not wafer_maps_supported else "Open wafer PNG"
+            wafer_png_uri = None
             if wafer_map_path.exists():
                 wafer_png_uri = wafer_map_path.resolve().as_uri()
                 wafer_png_link.hyperlink = wafer_png_uri
                 wafer_png_link.font = Font(color="0000EE", underline="single")
 
+            site_cdf_link = ws_plots[f"E{plot_anchor_row}"]
+            site_cdf_link.value = "Open site CDF PNG" if site_cdf_path.exists() else "Not generated"
+            if site_cdf_path.exists():
+                site_cdf_uri = site_cdf_path.resolve().as_uri()
+                site_cdf_link.hyperlink = site_cdf_uri
+                site_cdf_link.font = Font(color="0000EE", underline="single")
+            else:
+                site_cdf_uri = None
+
             cdf_anchor_cell = f"B{plot_anchor_row + 1}"
             wafer_anchor_cell = f"K{plot_anchor_row + 1}"
+            site_cdf_anchor_cell = f"T{plot_anchor_row + 1}"
             if plot_path.exists():
                 img = XLImage(str(plot_path))
                 img.width = 520
@@ -1897,8 +2474,16 @@ def generate_yield_cpk_report(
                 wimg.width = 520
                 wimg.height = 360
                 ws_plots.add_image(wimg, wafer_anchor_cell)
-                if wafer_uri is not None:
-                    plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_uri)
+                wafer_image_uri = wafer_uri or wafer_png_uri
+                if wafer_image_uri is not None:
+                    plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_image_uri)
+            if site_cdf_path.exists():
+                simg = XLImage(str(site_cdf_path))
+                simg.width = 520
+                simg.height = 360
+                ws_plots.add_image(simg, site_cdf_anchor_cell)
+                if site_cdf_uri is not None:
+                    plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(site_cdf_uri)
             # Reserve some rows for the image.
             plot_link_target = f"#{_excel_internal_sheet_ref(ws_plots.title)}!{cdf_anchor_cell}"
             plot_anchor_row += 30
@@ -1910,10 +2495,15 @@ def generate_yield_cpk_report(
                 test_name,
                 unit,
                 y,
-                c,
-                status,
-                n,
                 n_fail,
+                c,
+                "YES" if METRIC_YIELD in metric_key_set else "NO",
+                "YES" if METRIC_CPK_LOW in metric_key_set else "NO",
+                "YES" if METRIC_CPK_HIGH in metric_key_set else "NO",
+                "YES" if METRIC_SITE_DELTA in metric_key_set else "NO",
+                max(int(assessment.peak_count or 0), 1),
+                "NO" if METRIC_UNIQUE_VALUES in metric_key_set else "YES",
+                n,
                 n_out,
                 comment,
                 "View",
@@ -1945,6 +2535,8 @@ def generate_yield_cpk_report(
                     "test_col": int(test_col),
                     "test_name": test_name,
                     "status": status,
+                    "metric_keys": assessment.metric_keys,
+                    "priority": assessment.priority,
                     "fail_chips": n_fail,
                     "yield_pct": y,
                     "cpk": c,
@@ -1982,8 +2574,80 @@ def generate_yield_cpk_report(
             ),
         )
 
+        yes_fill = PatternFill(patternType="solid", fgColor="FFC7CE")
+        no_fill = PatternFill(patternType="solid", fgColor="C6EFCE")
+        yes_font = Font(color="9C0006")
+        no_font = Font(color="006100")
+        yes_no_metric_headers = [
+            "Fails",
+            "Cpk<1.67",
+            "Cpk>20",
+            "Site-to-Site Delta",
+        ]
+        for col_name in yes_no_metric_headers:
+            col_idx = headers.index(col_name) + 1
+            col_letter = _excel_col_letter(col_idx)
+            metric_range = f"{col_letter}2:{col_letter}{1 + out_rows}"
+            ws.conditional_formatting.add(
+                metric_range,
+                FormulaRule(formula=[f'EXACT({col_letter}2,"YES")'], fill=yes_fill, font=yes_font),
+            )
+            ws.conditional_formatting.add(
+                metric_range,
+                FormulaRule(formula=[f'EXACT({col_letter}2,"NO")'], fill=no_fill, font=no_font),
+            )
+
+        unique_values_col_idx = headers.index("Unique Values") + 1
+        unique_values_col_letter = _excel_col_letter(unique_values_col_idx)
+        unique_values_range = f"{unique_values_col_letter}2:{unique_values_col_letter}{1 + out_rows}"
+        ws.conditional_formatting.add(
+            unique_values_range,
+            FormulaRule(formula=[f'EXACT({unique_values_col_letter}2,"NO")'], fill=yes_fill, font=yes_font),
+        )
+        ws.conditional_formatting.add(
+            unique_values_range,
+            FormulaRule(formula=[f'EXACT({unique_values_col_letter}2,"YES")'], fill=no_fill, font=no_font),
+        )
+
+        multimodality_col_idx = headers.index("Multimodality") + 1
+        multimodality_col_letter = _excel_col_letter(multimodality_col_idx)
+        multimodality_range = f"{multimodality_col_letter}2:{multimodality_col_letter}{1 + out_rows}"
+        ws.conditional_formatting.add(
+            multimodality_range,
+            FormulaRule(formula=[f"{multimodality_col_letter}2=1"], fill=no_fill, font=no_font),
+        )
+        ws.conditional_formatting.add(
+            multimodality_range,
+            FormulaRule(formula=[f"{multimodality_col_letter}2<>1"], fill=yes_fill, font=yes_font),
+        )
+
         # Apply module block coloring on the data sheet.
         _apply_module_group_row_colors(ws)
+        for row_idx in range(2, 2 + out_rows):
+            for col_name in yes_no_metric_headers:
+                metric_cell = ws.cell(row=row_idx, column=headers.index(col_name) + 1)
+                if metric_cell.value == "YES":
+                    metric_cell.fill = yes_fill
+                    metric_cell.font = yes_font
+                elif metric_cell.value == "NO":
+                    metric_cell.fill = no_fill
+                    metric_cell.font = no_font
+
+            unique_values_cell = ws.cell(row=row_idx, column=unique_values_col_idx)
+            if unique_values_cell.value == "NO":
+                unique_values_cell.fill = yes_fill
+                unique_values_cell.font = yes_font
+            elif unique_values_cell.value == "YES":
+                unique_values_cell.fill = no_fill
+                unique_values_cell.font = no_font
+
+            multimodality_cell = ws.cell(row=row_idx, column=multimodality_col_idx)
+            if multimodality_cell.value == 1:
+                multimodality_cell.fill = no_fill
+                multimodality_cell.font = no_font
+            else:
+                multimodality_cell.fill = yes_fill
+                multimodality_cell.font = yes_font
 
         # Auto-fit columns.
         _autofit_openpyxl_columns(ws)
@@ -1996,7 +2660,7 @@ def generate_yield_cpk_report(
 
     from datetime import datetime
 
-    out_xlsx = output_folder / "Yield_Cpk_Report.xlsx"
+    out_xlsx = output_folder / "Test_Data_Analysis_Report.xlsx"
     if overview_entries:
         _add_overview_sheet(
             wb,
@@ -2005,6 +2669,8 @@ def generate_yield_cpk_report(
             processed_files=[p.name for p in csv_paths],
             output_folder=output_folder,
         )
+    for sheet in wb.worksheets:
+        _autofit_openpyxl_columns(sheet)
     link_issues = _self_check_workbook_internal_hyperlinks(wb)
     if link_issues:
         preview = "\n".join(f"- {msg}" for msg in link_issues[:15])
@@ -2016,7 +2682,7 @@ def generate_yield_cpk_report(
         _enable_clickable_plot_images(out_xlsx, plot_image_targets_by_sheet)
     except PermissionError:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        alt = output_folder / f"Yield_Cpk_Report_{ts}.xlsx"
+        alt = output_folder / f"Test_Data_Analysis_Report_{ts}.xlsx"
         wb.save(alt)
         _enable_clickable_plot_images(alt, plot_image_targets_by_sheet)
         print(f"Could not overwrite (file open?): {out_xlsx}")
@@ -2043,12 +2709,11 @@ def generate_correlation_workbook(
     from openpyxl.styles import Font
 
     output_folder.mkdir(parents=True, exist_ok=True)
-    if single_file:
-        csv_paths = [input_folder / single_file]
-    else:
-        csv_paths = sorted([p for p in input_folder.glob("*.csv") if p.is_file()])
-    if max_files is not None:
-        csv_paths = csv_paths[:max_files]
+    csv_paths = _collect_analysis_csv_paths(
+        input_folder,
+        single_file=single_file,
+        max_files=max_files,
+    )
     if not csv_paths:
         raise SystemExit(f"No .csv files found in: {input_folder}")
 
