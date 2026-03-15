@@ -38,6 +38,9 @@ from xml.etree import ElementTree as ET
 
 DEFAULT_ENCODING = "latin1"
 DELIMITER = ";"
+WAFER_MAP_FAIL_COORDS_MAX_ITEMS = 50
+WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_WIDE = 84
+WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_NARROW = 56
 
 
 # ================================================
@@ -869,11 +872,11 @@ def _cdf_plot_by_site_png(
             continue
         y = np.arange(1, site_values.size + 1) / site_values.size
         site_label = _format_site_identifier(site_num)
-        ax.plot(
+        ax.scatter(
             site_values,
             y,
-            linewidth=1.6,
-            alpha=0.95,
+            s=14,
+            alpha=0.82,
             color=cmap(idx % 10),
             label=f"Site {site_label} (n={site_values.size})",
         )
@@ -1059,10 +1062,9 @@ def _summarize_failing_chip_coordinates(
     *,
     low_limit: float | None,
     high_limit: float | None,
-    max_items: int = 10,
-    wrap_width: int = 34,
+    max_items: int = WAFER_MAP_FAIL_COORDS_MAX_ITEMS,
+    wrap_width: int = WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_NARROW,
 ) -> str | None:
-    import numpy as np
     import textwrap
 
     if grouped is None or grouped.empty or "FAIL" not in grouped.columns:
@@ -1072,31 +1074,12 @@ def _summarize_failing_chip_coordinates(
     if failed.empty:
         return None
 
-    low = None
-    if low_limit is not None:
-        low_f = float(low_limit)
-        if math.isfinite(low_f):
-            low = low_f
-
-    high = None
-    if high_limit is not None:
-        high_f = float(high_limit)
-        if math.isfinite(high_f):
-            high = high_f
-
-    severity = np.zeros(len(failed), dtype=float)
-    fail_values = failed["v"].to_numpy(dtype=float)
-    if low is not None:
-        severity = np.maximum(severity, low - fail_values)
-    if high is not None:
-        severity = np.maximum(severity, fail_values - high)
-    failed["FAIL_SEVERITY"] = severity
-    failed = failed.sort_values(["FAIL_SEVERITY", "Y", "X"], ascending=[False, True, True])
+    failed = failed.sort_values(["X", "Y"], ascending=[True, True])
 
     total_fail = int(failed.shape[0])
     selected = failed.head(max_items)
     coords = [
-        f"({_fmt_wafer_coordinate(x_val)},{_fmt_wafer_coordinate(y_val)})"
+        f"X{_fmt_wafer_coordinate(x_val)}-Y{_fmt_wafer_coordinate(y_val)}"
         for x_val, y_val in zip(selected["X"], selected["Y"], strict=False)
     ]
     prefix = f"Fail coords ({len(coords)}/{total_fail}): " if total_fail > len(coords) else f"Fail coords ({total_fail}): "
@@ -1148,6 +1131,9 @@ def _wafer_map_png(
 
     wafer_panels: list[dict[str, Any] | None] = []
     max_annotation_lines = 0
+    fail_summary_wrap_width = (
+        WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_WIDE if ncols <= 2 else WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_NARROW
+    )
     for w in wafers:
         d = df[df["WAFER"].astype(str) == str(w)].copy()
         if d.empty:
@@ -1161,6 +1147,8 @@ def _wafer_map_png(
             grouped,
             low_limit=low_limit,
             high_limit=high_limit,
+            max_items=WAFER_MAP_FAIL_COORDS_MAX_ITEMS,
+            wrap_width=fail_summary_wrap_width,
         )
         if fail_summary:
             max_annotation_lines = max(max_annotation_lines, fail_summary.count("\n") + 1)
@@ -1178,17 +1166,20 @@ def _wafer_map_png(
             }
         )
 
-    fig_w = (10.0 if n <= 2 else 12.5) * wafermap_scale
-    fig_h = (6.8 if n <= 2 else max(7.0, 4.8 * nrows)) * wafermap_scale
+    base_fig_w = (10.0 if n <= 2 else 12.5) * wafermap_scale
+    base_fig_h = (6.8 if n <= 2 else max(7.0, 4.8 * nrows)) * wafermap_scale
+    annotation_height_in = (0.16 * max_annotation_lines + (0.22 if max_annotation_lines else 0.0)) * wafermap_scale
+    fig_w = base_fig_w
+    fig_h = base_fig_h + (annotation_height_in * max(1, nrows))
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=140)
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
     axes = axes.ravel()
 
     # Reserve a right margin for the colorbar so it never covers the wafer maps.
-    annotation_space = min(0.18, 0.04 * max_annotation_lines)
-    bottom_margin = 0.10 + (annotation_space * (0.90 if nrows == 1 else 0.55))
-    hspace = 0.32 + (annotation_space * (3.8 if nrows > 1 else 1.8))
+    annotation_space = annotation_height_in / max(fig_h, 1.0)
+    bottom_margin = 0.08 + (annotation_space * (1.15 if nrows == 1 else 0.75))
+    hspace = 0.32 + min(0.45, annotation_space * (4.0 if nrows > 1 else 2.1))
     fig.subplots_adjust(left=0.06, right=0.86, bottom=bottom_margin, top=0.90, wspace=0.18, hspace=hspace)
 
     mappable = None

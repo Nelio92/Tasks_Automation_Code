@@ -5,6 +5,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 
@@ -240,12 +241,12 @@ class StatusLogicUnitTests(unittest.TestCase):
         self.assertLess(delta_sigma, 3.0)
         self.assertIn(worst_site, {"0", "1", "2"})
 
-    def test_summarize_failing_chip_coordinates_limits_to_ten_and_prioritizes_worst_fails(self) -> None:
+    def test_summarize_failing_chip_coordinates_limits_and_sorts_by_x_then_y(self) -> None:
         grouped = pd.DataFrame(
             {
-                "X": list(range(1, 13)),
-                "Y": [2] * 12,
-                "v": [10.6, 10.7, 10.8, 10.9, 11.0, 11.1, 11.2, 11.3, 11.4, 11.5, 12.1, 12.4],
+                "X": [9, 1, 3, 2, 5, 4, 8, 6, 7, 10, 12, 11],
+                "Y": [2, 3, 1, 2, 4, 1, 3, 2, 1, 5, 2, 1],
+                "v": [10.6, 12.4, 10.8, 10.9, 11.0, 11.1, 11.2, 11.3, 11.4, 11.5, 12.1, 10.7],
                 "FAIL": [True] * 12,
             }
         )
@@ -260,10 +261,34 @@ class StatusLogicUnitTests(unittest.TestCase):
 
         self.assertIsNotNone(summary)
         self.assertTrue(summary.startswith("Fail coords (10/12): "))
-        self.assertIn("(12,2)", summary)
-        self.assertIn("(11,2)", summary)
-        self.assertNotIn("(1,2)", summary)
-        self.assertNotIn("(2,2)", summary)
+        self.assertIn("X1-Y3", summary)
+        self.assertIn("X10-Y5", summary)
+        self.assertNotIn("X11-Y1", summary)
+        self.assertNotIn("X12-Y2", summary)
+        self.assertLess(summary.index("X1-Y3"), summary.index("X2-Y2"))
+        self.assertLess(summary.index("X2-Y2"), summary.index("X3-Y1"))
+
+    def test_summarize_failing_chip_coordinates_caps_output_at_fifty(self) -> None:
+        grouped = pd.DataFrame(
+            {
+                "X": list(range(1, 56)),
+                "Y": [1] * 55,
+                "v": [11.0] * 55,
+                "FAIL": [True] * 55,
+            }
+        )
+
+        summary = analysis._summarize_failing_chip_coordinates(
+            grouped,
+            low_limit=9.5,
+            high_limit=10.5,
+            wrap_width=400,
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertTrue(summary.startswith("Fail coords (50/55): "))
+        self.assertIn("X50-Y1", summary)
+        self.assertNotIn("X51-Y1", summary)
 
     def test_assess_test_metrics_detects_multimodality_reason(self) -> None:
         sample_count = 100
@@ -401,6 +426,65 @@ class StatusLogicUnitTests(unittest.TestCase):
                 high_limit=2.0,
             )
             self.assertTrue(out_path.exists())
+
+    def test_cdf_plot_by_site_uses_scatter_points_not_lines(self) -> None:
+        series = pd.Series([0.1, 0.2, 0.3, 1.1, 1.2, 1.3], dtype=float)
+        meta_cols = pd.DataFrame({"SITE_NUM": [0, 0, 0, 1, 1, 1]})
+
+        class _FakeAxis:
+            def __init__(self) -> None:
+                self.scatter_calls: list[dict[str, object]] = []
+
+            def scatter(self, x, y, **kwargs):
+                self.scatter_calls.append({"x": list(x), "y": list(y), **kwargs})
+
+            def axvline(self, *args, **kwargs):
+                return None
+
+            def grid(self, *args, **kwargs):
+                return None
+
+            def set_title(self, *args, **kwargs):
+                return None
+
+            def set_xlabel(self, *args, **kwargs):
+                return None
+
+            def set_ylabel(self, *args, **kwargs):
+                return None
+
+            def legend(self, *args, **kwargs):
+                return None
+
+        class _FakeFigure:
+            def tight_layout(self):
+                return None
+
+            def savefig(self, *args, **kwargs):
+                return None
+
+        fake_axis = _FakeAxis()
+        fake_figure = _FakeFigure()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "site_cdf.png"
+            with mock.patch("matplotlib.pyplot.subplots", return_value=(fake_figure, fake_axis)), mock.patch(
+                "matplotlib.pyplot.close"
+            ):
+                analysis._cdf_plot_by_site_png(
+                    series,
+                    meta_cols=meta_cols,
+                    title="Example Test",
+                    out_path=out_path,
+                    low_limit=0.0,
+                    high_limit=2.0,
+                )
+
+        self.assertEqual(len(fake_axis.scatter_calls), 2)
+        for scatter_call in fake_axis.scatter_calls:
+            self.assertIn("s", scatter_call)
+            self.assertGreater(len(scatter_call["x"]), 0)
+            self.assertGreater(len(scatter_call["y"]), 0)
 
 
 class CorrelationHelperUnitTests(unittest.TestCase):
