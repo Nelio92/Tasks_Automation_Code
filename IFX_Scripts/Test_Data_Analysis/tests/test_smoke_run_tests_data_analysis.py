@@ -116,14 +116,16 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(worksheet["E1"].value, "CDF Plot")
                 self.assertEqual(worksheet["F1"].value, "Yield (%)")
                 self.assertEqual(worksheet["G1"].value, "Cpk")
-                self.assertEqual(worksheet["H1"].value, "Fail Chips")
+                self.assertEqual(worksheet["H1"].value, "Failing Chips")
                 self.assertEqual(worksheet["I1"].value, "Fails")
                 self.assertEqual(worksheet["I1"].fill.fgColor.rgb, "00FFFF00")
                 self.assertEqual(worksheet["J1"].value, "Cpk<1.67")
                 self.assertEqual(worksheet["M1"].value, "Multimodality")
                 self.assertEqual(worksheet["N1"].value, "Unique Values")
                 self.assertEqual(worksheet["O1"].value, "Skewness")
-                self.assertEqual(worksheet["R1"].value, "Findings")
+                self.assertEqual(worksheet["P1"].value, "Findings")
+                self.assertEqual(worksheet["Q1"].value, "Outliers")
+                self.assertEqual(worksheet["R1"].value, "N")
                 self.assertEqual(worksheet["Y1"].value, "TE notes")
                 self.assertEqual(worksheet["I1"].alignment.horizontal, "center")
                 self.assertEqual(worksheet["I1"].alignment.vertical, "center")
@@ -152,6 +154,9 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(txpa_row[12], 1)
                 self.assertEqual(txpa_row[13], "YES")
                 self.assertEqual(txpa_row[14], "NO")
+                self.assertIn("large spread", str(txpa_row[15]).lower())
+                self.assertEqual(txpa_row[16], 0)
+                self.assertEqual(txpa_row[17], 4)
                 self.assertEqual(txpa_row[24], None)
             finally:
                 workbook.close()
@@ -165,7 +170,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertTrue(cf_rules, "Expected conditional formatting rules in yield workbook")
                 self.assertTrue(
                     any(str(rule.sqref) in {"H2", "H2:H2"} for rule in cf_rules),
-                    "Expected Fail Chips conditional formatting on column H",
+                    "Expected Failing Chips conditional formatting on column H",
                 )
                 self.assertTrue(
                     any(str(rule.sqref) in {"I2", "I2:I2"} for rule in cf_rules),

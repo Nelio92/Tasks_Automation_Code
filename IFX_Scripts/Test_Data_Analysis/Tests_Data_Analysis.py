@@ -2456,7 +2456,7 @@ def generate_yield_cpk_report(
             "CDF Plot",
             "Yield (%)",
             "Cpk",
-            "Fail Chips",
+            "Failing Chips",
             "Fails",
             "Cpk<1.67",
             "Cpk>20",
@@ -2464,9 +2464,9 @@ def generate_yield_cpk_report(
             "Multimodality",
             "Unique Values",
             "Skewness",
-            "N",
-            "Outliers",
             "Findings",
+            "Outliers",
+            "N",
             "Original LTL",
             "Original UTL",
             "LTL 6s",
@@ -2710,9 +2710,9 @@ def generate_yield_cpk_report(
                 max(int(assessment.peak_count or 0), 1),
                 "NO" if METRIC_UNIQUE_VALUES in metric_key_set else "YES",
                 "YES" if METRIC_SKEWNESS in metric_key_set else "NO",
-                n,
-                n_out,
                 comment,
+                n_out,
+                n,
                 low,
                 high,
                 l6,
@@ -2768,7 +2768,7 @@ def generate_yield_cpk_report(
             _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
-        fail_chips_col_idx = headers.index("Fail Chips") + 1
+        fail_chips_col_idx = headers.index("Failing Chips") + 1
         fail_chips_col_letter = _excel_col_letter(fail_chips_col_idx)
         fail_chips_range = f"{fail_chips_col_letter}2:{fail_chips_col_letter}{1 + out_rows}"
         ws.conditional_formatting.add(
