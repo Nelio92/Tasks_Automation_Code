@@ -121,6 +121,17 @@ class StatusLogicUnitTests(unittest.TestCase):
             ),
             "Site-to-Site Delta",
         )
+        self.assertEqual(
+            analysis._status_for_test(
+                yield_pct=100.0,
+                cpk=2.0,
+                yield_threshold=100.0,
+                cpk_low=1.67,
+                cpk_high=20.0,
+                skewness=True,
+            ),
+            "Skewness",
+        )
         self.assertIsNone(
             analysis._status_for_test(
                 yield_pct=100.0,
@@ -178,6 +189,82 @@ class StatusLogicUnitTests(unittest.TestCase):
         self.assertIn(analysis.METRIC_UNIQUE_VALUES, assessment.metric_keys)
         self.assertEqual(assessment.priority, "MEDIUM")
 
+    def test_site_delta_sigma_detects_subtle_real_site_shift(self) -> None:
+        site0 = [-0.15, -0.05, 0.0, 0.05, 0.15] * 6
+        site1 = [0.55, 0.65, 0.7, 0.75, 0.85] * 6
+        site2 = [0.6, 0.7, 0.75, 0.8, 0.9] * 6
+        series = pd.Series(site0 + site1 + site2, dtype=float)
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * len(site0)) + ([1] * len(site1)) + ([2] * len(site2)),
+                "WAFER": (["W1"] * (len(site0) + len(site1) + len(site2))),
+                "X": list(range(len(series))),
+                "Y": [idx % 6 for idx in range(len(series))],
+            }
+        )
+
+        delta_sigma, worst_site = analysis._site_delta_sigma(series, meta_cols=metric_frame)
+
+        self.assertIsNotNone(delta_sigma)
+        self.assertGreater(delta_sigma, 3.0)
+        self.assertIn(worst_site, {"0", "1", "2"})
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="V",
+            yield_pct=100.0,
+            cpk=3.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+        self.assertIn(analysis.METRIC_SITE_DELTA, assessment.metric_keys)
+
+    def test_site_delta_sigma_ignores_balanced_same_center_sites(self) -> None:
+        base_pattern = [-0.3, -0.1, 0.0, 0.1, 0.3] * 6
+        series = pd.Series(base_pattern + base_pattern + base_pattern, dtype=float)
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * len(base_pattern)) + ([1] * len(base_pattern)) + ([2] * len(base_pattern)),
+                "WAFER": (["W1"] * len(series)),
+                "X": list(range(len(series))),
+                "Y": [idx % 6 for idx in range(len(series))],
+            }
+        )
+
+        delta_sigma, worst_site = analysis._site_delta_sigma(series, meta_cols=metric_frame)
+
+        self.assertIsNotNone(delta_sigma)
+        self.assertLess(delta_sigma, 3.0)
+        self.assertIn(worst_site, {"0", "1", "2"})
+
+    def test_summarize_failing_chip_coordinates_limits_to_ten_and_prioritizes_worst_fails(self) -> None:
+        grouped = pd.DataFrame(
+            {
+                "X": list(range(1, 13)),
+                "Y": [2] * 12,
+                "v": [10.6, 10.7, 10.8, 10.9, 11.0, 11.1, 11.2, 11.3, 11.4, 11.5, 12.1, 12.4],
+                "FAIL": [True] * 12,
+            }
+        )
+
+        summary = analysis._summarize_failing_chip_coordinates(
+            grouped,
+            low_limit=9.5,
+            high_limit=10.5,
+            max_items=10,
+            wrap_width=200,
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertTrue(summary.startswith("Fail coords (10/12): "))
+        self.assertIn("(12,2)", summary)
+        self.assertIn("(11,2)", summary)
+        self.assertNotIn("(1,2)", summary)
+        self.assertNotIn("(2,2)", summary)
+
     def test_assess_test_metrics_detects_multimodality_reason(self) -> None:
         sample_count = 100
         metric_frame = pd.DataFrame(
@@ -188,7 +275,7 @@ class StatusLogicUnitTests(unittest.TestCase):
                 "Y": [idx % 10 for idx in range(sample_count)],
             }
         )
-        series = pd.Series(([0.0] * 50) + ([8.0] * 50))
+        series = pd.Series(([0.0] * 35) + ([4.0] * 30) + ([8.0] * 35))
 
         assessment = analysis._assess_test_metrics(
             series=series,
@@ -207,6 +294,86 @@ class StatusLogicUnitTests(unittest.TestCase):
         self.assertEqual(assessment.priority, "MEDIUM")
         self.assertGreaterEqual(assessment.peak_count, 2)
         self.assertIsNotNone(assessment.multimodality_reason)
+
+    def test_assess_test_metrics_detects_skewness(self) -> None:
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * 50) + ([1] * 50),
+                "WAFER": (['W1'] * 100),
+                "X": list(range(100)),
+                "Y": [idx % 10 for idx in range(100)],
+            }
+        )
+        series = pd.Series(([0.0] * 75) + ([1.0] * 15) + ([5.0] * 10), dtype=float)
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="V",
+            yield_pct=100.0,
+            cpk=2.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+
+        self.assertIn(analysis.METRIC_SKEWNESS, assessment.metric_keys)
+        self.assertIsNotNone(assessment.skewness)
+        self.assertGreater(abs(float(assessment.skewness)), analysis.SKEWNESS_ABS_THRESHOLD)
+
+    def test_assess_test_metrics_excludes_multimodality_for_digital_tests(self) -> None:
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * 50) + ([1] * 50),
+                "WAFER": (["W1"] * 50) + (["W2"] * 50),
+                "X": list(range(100)),
+                "Y": [idx % 10 for idx in range(100)],
+            }
+        )
+        series = pd.Series(([0.0] * 50) + ([1.0] * 50))
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="#",
+            yield_pct=100.0,
+            cpk=2.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+
+        self.assertNotIn(analysis.METRIC_MULTIMODALITY, assessment.metric_keys)
+        self.assertEqual(assessment.peak_count, 1)
+
+    def test_assess_test_metrics_excludes_multimodality_for_go_nogo_tests(self) -> None:
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * 50) + ([1] * 50),
+                "WAFER": (["W1"] * 50) + (["W2"] * 50),
+                "X": list(range(100)),
+                "Y": [idx % 10 for idx in range(100)],
+            }
+        )
+        series = pd.Series(([0.0] * 50) + ([8.0] * 50))
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="V",
+            yield_pct=100.0,
+            cpk=2.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+
+        self.assertIn(analysis.METRIC_UNIQUE_VALUES, assessment.metric_keys)
+        self.assertNotIn(analysis.METRIC_MULTIMODALITY, assessment.metric_keys)
+        self.assertEqual(assessment.peak_count, 1)
 
     def test_unique_values_ignores_missing_and_hash_units(self) -> None:
         digital_like = pd.Series(([0.0, 1.0] * 20), dtype=float)

@@ -1,5 +1,5 @@
 param(
-    [string]$ConfigPath = "configs/config_default.yaml",
+    [string]$ConfigPath = "configs/config.yaml",
     [switch]$SkipInstall
 )
 
@@ -29,7 +29,7 @@ $workspaceRoot = Get-WorkspaceAnchor -StartPath $scriptRoot
 Set-Location $workspaceRoot
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = Join-Path $scriptRoot "configs/config_default.yaml"
+    $ConfigPath = Join-Path $scriptRoot "configs/config.yaml"
 }
 elseif (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
     $scriptRelativeConfig = Join-Path $scriptRoot $ConfigPath

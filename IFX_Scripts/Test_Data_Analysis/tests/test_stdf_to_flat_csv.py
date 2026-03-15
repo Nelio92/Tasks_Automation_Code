@@ -4,6 +4,7 @@ import csv
 import json
 import io
 import sys
+import tarfile
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -30,6 +31,10 @@ class FakeRecord:
 
 
 class StdfToFlatCsvUnitTests(unittest.TestCase):
+    def test_csv_name_for_source_supports_eff_and_tar_gz_inputs(self) -> None:
+        self.assertEqual(converter.csv_name_for_source("device.eff"), "device.csv")
+        self.assertEqual(converter.csv_name_for_source("device.std.tar.gz"), "device.csv")
+
     def test_convert_records_to_csv_generates_analysis_compatible_layout(self) -> None:
         records = [
             FakeRecord("MIR", LOT_ID="LOT_A", SBLOT_ID="SUB1"),
@@ -126,6 +131,80 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             self.assertTrue(consistency["checks"]["pir_equals_prr"])
             self.assertTrue(consistency["checks"]["all_rows_have_measurements"])
             self.assertEqual(summary.file_results[0].dtr_record_count, 1)
+
+    def test_convert_eff_file_generates_analysis_compatible_layout(self) -> None:
+        eff_content = "\n".join(
+            [
+                "<<EFF:1.00>>; Headers=2; Rows=2; Columns=23; RowSplit=N; Ref=SAMPLE; JobId=SAMPLE;",
+                "<<History>>; CONVERT:V1.0;",
+                "<+EFF:1.00>;VNr;LOT;SUBLOT;WAFER;TESTMODE;T_TYPE;PF;HBIN;SBIN;X;Y;SITE_NUM;TESTPROG;REV;PAR;CHIP_ID;TEMP;LASTTEST;FIRST_FAIL_TEST;520123;530045",
+                "<+PName>;;;;;;;;;;;;;;;;;;;;TXPA_OUTPUT_PWR;DPLL_LOCK_TIME",
+                "<+Source>;;;;;;;;;;;;;;;;;;;;DLOG:::S11P;DLOG:::S11P",
+                "<+Qualifier>;Num;Text;Text;Num;Text;Text;Text;Num;Num;Num;Num;Num;Text;Text;Value;Text;Value;Num;Num;Value;Value",
+                "<Unit>;;;;;;;;;;;;;;;;;;;;dBm;us",
+                "<USL>;;;;;;;;;;;;;;;;;;;;10.5;5",
+                "<LSL>;;;;;;;;;;;;;;;;;;;;9.5;0",
+                "<DataType>;;;;;;;;;;;;;;;;;;;;FLOAT;FLOAT",
+                "<ColType>;;;;;;;;;;;;;;;;;;;;PTR;PTR",
+                "<Discrete>;;;;;;;;;;;;;;;;;;;;N;N",
+                "<ParType>;;;;;;;;;;;;;;;;;;;;NUM;NUM",
+                "05_Die;1;LOT_A;SUB1;1;PROD;FT;F;1;1;10;11;0;TP;A;PAR;CHIP_A;25;520123;520123;9.2;1.0",
+                "05_Die;2;LOT_A;SUB1;1;PROD;FT;P;1;1;12;13;1;TP;A;PAR;CHIP_B;25;530045;;10.0;2.0",
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            eff_path = tmp_path / "sample.eff"
+            output_csv = tmp_path / "sample.csv"
+            eff_path.write_text(eff_content, encoding="latin1", newline="")
+
+            summary = converter.convert_stdf_file(eff_path, output_csv)
+
+            self.assertEqual(summary.converted_files, 1)
+            self.assertEqual(summary.converted_parts, 2)
+            self.assertEqual(summary.converted_tests, 2)
+
+            meta = analysis.scan_flat_file_meta(output_csv, encoding="utf-8")
+            self.assertEqual(meta.numeric_test_cols, ["520123", "530045"])
+            self.assertEqual(meta.meta_rows["Test Name"]["520123"], "TXPA_OUTPUT_PWR")
+            self.assertEqual(meta.meta_rows["Low"]["520123"], "9.5")
+            self.assertEqual(meta.meta_rows["High"]["520123"], "10.5")
+
+            df = analysis._read_unit_data(
+                output_csv,
+                data_start_line_index=meta.data_start_line_index,
+                usecols=meta.header,
+                encoding="utf-8",
+            )
+            self.assertEqual(df.shape[0], 2)
+            self.assertEqual(df.loc[0, "PF"], "F")
+            self.assertEqual(df.loc[0, "FIRST_FAIL_TEST"], "TXPA_OUTPUT_PWR")
+            self.assertEqual(float(df.loc[1, "530045"]), 2.0)
+
+    def test_convert_std_tar_gz_uses_inner_std_member(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            archive_path = tmp_path / "device.std.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                payload = b"fake stdf payload"
+                info = tarfile.TarInfo("nested/device.std")
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+
+            output_csv = tmp_path / "device.csv"
+            with mock.patch.object(converter, "_convert_stdf_file_with_pystdf") as convert_mock:
+                convert_mock.return_value = converter.ConversionSummary(
+                    converted_files=1,
+                    converted_parts=0,
+                    converted_tests=0,
+                    output_files=[output_csv],
+                )
+
+                converter.convert_stdf_file(archive_path, output_csv)
+
+            self.assertEqual(convert_mock.call_count, 1)
+            self.assertEqual(convert_mock.call_args.kwargs["archive_member_name"], "nested/device.std")
 
     def test_convert_stdf_before_analysis_allows_existing_input_folder_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

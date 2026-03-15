@@ -1,16 +1,43 @@
 from __future__ import annotations
 import argparse
 import importlib
+import multiprocessing
+import sys
 from pathlib import Path
 from typing import Any
 import Tests_Data_Analysis as analysis
 import stdf_to_flat_csv
 
 
-TEST_DATA_ANALYSIS_ROOT = Path(__file__).resolve().parent
+def _runtime_root() -> Path:
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass).resolve()
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _external_tool_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+TEST_DATA_ANALYSIS_ROOT = _runtime_root()
+EXTERNAL_TOOL_ROOT = _external_tool_root()
 
 
 ALLOWED_CORRELATION_METHODS = {"pearson", "spearman"}
+DEVELOPER_DEFAULTS = {
+    "outlier_mad_multiplier": 6.0,
+    "max_files": None,
+    "single_file": None,
+    "encoding": analysis.DEFAULT_ENCODING,
+    "correlation_methods": ["pearson", "spearman"],
+    "pearson_abs_min_for_report": 0.8,
+    "wafermap_circle_area_mult": 1.0,
+}
 REQUIRED_CONFIG_KEYS = {"input_folder", "output_folder", "modules"}
 OPTIONAL_CONFIG_KEYS = {
     "yield_threshold",
@@ -55,20 +82,35 @@ def _resolve_from_test_data_analysis_root(path_value: str | Path) -> Path:
         return candidate
 
     first_part = candidate.parts[0] if candidate.parts else ""
-    search_roots = (TEST_DATA_ANALYSIS_ROOT, *TEST_DATA_ANALYSIS_ROOT.parents)
+    search_roots = []
+    for base in (EXTERNAL_TOOL_ROOT, TEST_DATA_ANALYSIS_ROOT, *EXTERNAL_TOOL_ROOT.parents, *TEST_DATA_ANALYSIS_ROOT.parents):
+        if base not in search_roots:
+            search_roots.append(base)
     for base in search_roots:
         resolved = (base / candidate).resolve()
         anchor = (base / first_part) if first_part else resolved
         if resolved.exists() or anchor.exists():
             return resolved
 
-    return (TEST_DATA_ANALYSIS_ROOT / candidate).resolve()
+    return (EXTERNAL_TOOL_ROOT / candidate).resolve()
 
 
 def _resolve_config_path(config_arg: Path) -> Path:
     candidates = [config_arg]
     if not config_arg.is_absolute():
-        candidates.append(TEST_DATA_ANALYSIS_ROOT / config_arg)
+        candidates.extend(
+            [
+                EXTERNAL_TOOL_ROOT / config_arg,
+                TEST_DATA_ANALYSIS_ROOT / config_arg,
+            ]
+        )
+        if not config_arg.parts or config_arg.parts[0].lower() != "configs":
+            candidates.extend(
+                [
+                    EXTERNAL_TOOL_ROOT / "configs" / config_arg,
+                    TEST_DATA_ANALYSIS_ROOT / "configs" / config_arg,
+                ]
+            )
 
     for candidate in candidates:
         resolved = candidate.resolve()
@@ -291,8 +333,13 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
             else:
                 normalized["correlation_methods"] = methods
 
-    if normalized.get("generate_correlation_report") and "correlation_methods" not in config:
-        errors.append("correlation_methods is required when generate_correlation_report is true")
+    normalized.setdefault("outlier_mad_multiplier", float(DEVELOPER_DEFAULTS["outlier_mad_multiplier"]))
+    normalized.setdefault("max_files", DEVELOPER_DEFAULTS["max_files"])
+    normalized.setdefault("single_file", DEVELOPER_DEFAULTS["single_file"])
+    normalized.setdefault("encoding", str(DEVELOPER_DEFAULTS["encoding"]))
+    normalized.setdefault("correlation_methods", list(DEVELOPER_DEFAULTS["correlation_methods"]))
+    normalized.setdefault("pearson_abs_min_for_report", float(DEVELOPER_DEFAULTS["pearson_abs_min_for_report"]))
+    normalized.setdefault("wafermap_circle_area_mult", float(DEVELOPER_DEFAULTS["wafermap_circle_area_mult"]))
 
     if errors:
         raise ConfigValidationError(f"{config_path}\n{_format_config_errors(errors)}")
@@ -327,24 +374,17 @@ def _apply_config(config: dict[str, Any]) -> None:
         analysis.CPK_LOW = float(config["cpk_low"])
     if "cpk_high" in config:
         analysis.CPK_HIGH = float(config["cpk_high"])
-    if "outlier_mad_multiplier" in config:
-        analysis.OUTLIER_MAD_MULTIPLIER = float(config["outlier_mad_multiplier"])
-    if "max_files" in config:
-        analysis.MAX_FILES = None if config["max_files"] is None else int(config["max_files"])
-    if "single_file" in config:
-        value = config["single_file"]
-        analysis.SINGLE_FILE = None if value in (None, "", "null") else str(value)
-    if "encoding" in config:
-        analysis.ENCODING = str(config["encoding"])
+    analysis.OUTLIER_MAD_MULTIPLIER = float(config["outlier_mad_multiplier"])
+    analysis.MAX_FILES = None if config["max_files"] is None else int(config["max_files"])
+    value = config["single_file"]
+    analysis.SINGLE_FILE = None if value in (None, "", "null") else str(value)
+    analysis.ENCODING = str(config["encoding"])
     if "generate_correlation_report" in config:
         analysis.GENERATE_CORRELATION_REPORT = bool(config["generate_correlation_report"])
-    if "correlation_methods" in config:
-        methods = [str(item).strip().lower() for item in list(config["correlation_methods"]) if str(item).strip()]
-        analysis.CORRELATION_METHODS = [m for m in methods if m in {"pearson", "spearman"}]
-    if "pearson_abs_min_for_report" in config:
-        analysis.PEARSON_ABS_MIN_FOR_REPORT = float(config["pearson_abs_min_for_report"])
-    if "wafermap_circle_area_mult" in config:
-        analysis.WAFERMAP_CIRCLE_AREA_MULT = float(config["wafermap_circle_area_mult"])
+    methods = [str(item).strip().lower() for item in list(config["correlation_methods"]) if str(item).strip()]
+    analysis.CORRELATION_METHODS = [m for m in methods if m in {"pearson", "spearman"}]
+    analysis.PEARSON_ABS_MIN_FOR_REPORT = float(config["pearson_abs_min_for_report"])
+    analysis.WAFERMAP_CIRCLE_AREA_MULT = float(config["wafermap_circle_area_mult"])
 
 
 def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
@@ -430,7 +470,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/config_default.yaml"),
+        default=Path("configs/config.yaml"),
         help="Path to YAML config file",
     )
     parser.add_argument(
@@ -442,6 +482,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    multiprocessing.freeze_support()
     parser = _build_argument_parser()
     args = parser.parse_args()
 
@@ -461,14 +502,7 @@ def main() -> int:
         "YIELD_THRESHOLD": analysis.YIELD_THRESHOLD,
         "CPK_LOW": analysis.CPK_LOW,
         "CPK_HIGH": analysis.CPK_HIGH,
-        "OUTLIER_MAD_MULTIPLIER": analysis.OUTLIER_MAD_MULTIPLIER,
-        "MAX_FILES": analysis.MAX_FILES,
-        "SINGLE_FILE": analysis.SINGLE_FILE,
-        "ENCODING": analysis.ENCODING,
         "GENERATE_CORRELATION_REPORT": analysis.GENERATE_CORRELATION_REPORT,
-        "CORRELATION_METHODS": analysis.CORRELATION_METHODS,
-        "PEARSON_ABS_MIN_FOR_REPORT": analysis.PEARSON_ABS_MIN_FOR_REPORT,
-        "WAFERMAP_CIRCLE_AREA_MULT": analysis.WAFERMAP_CIRCLE_AREA_MULT,
         "CONVERT_STDF_BEFORE_ANALYSIS": bool(config.get("convert_stdf_before_analysis", False)),
         "STDF_SINGLE_FILE": config.get("stdf_single_file"),
         "STDF_FILE_PATTERNS": list(config.get("stdf_file_patterns") or stdf_to_flat_csv.DEFAULT_PATTERNS),

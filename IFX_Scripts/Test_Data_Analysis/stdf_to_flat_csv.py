@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import concurrent.futures
+import contextlib
 import csv
 import gzip
+import io
 import json
 import lzma
 import math
+import multiprocessing
+import os
 import re
 import sys
+import tarfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,15 +25,21 @@ DELIMITER = ";"
 DEFAULT_PATTERNS = (
     "*.stdf",
     "*.std",
+    "*.eff",
     "*.stdf.gz",
     "*.stdf.xz",
     "*.stdf.bz2",
     "*.std.gz",
     "*.std.xz",
     "*.std.bz2",
+    "*.stdf.tar.gz",
+    "*.std.tar.gz",
 )
 META_COLUMNS = ["UNIT_ID", "SITE_NUM", "WAFER", "X", "Y", "LOT", "SUBLOT", "CHIP_ID", "PF", "FIRST_FAIL_TEST"]
 SUMMARY_ROWS = ("Test Name", "Low", "High", "Unit", "Cpk", "Yield", "Mean", "Stddev")
+COMPRESSED_SUFFIXES = {".gz", ".xz", ".bz2"}
+ARCHIVE_SUFFIXES = {".tar"}
+SUPPORTED_INPUT_SUFFIXES = {".stdf", ".std", ".eff"}
 
 
 @dataclass(slots=True)
@@ -53,6 +65,21 @@ class PartRow:
     pf: str | None = None
     first_fail_test: str | None = None
     measurements: dict[str, float | int | str | None] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ColumnAccumulator:
+    count: int = 0
+    passed: int = 0
+    value_sum: float = 0.0
+    value_sum_sq: float = 0.0
+
+    def add(self, value: float, *, low: float | None, high: float | None) -> None:
+        self.count += 1
+        self.value_sum += float(value)
+        self.value_sum_sq += float(value) * float(value)
+        if not _value_fails_limits(float(value), low, high):
+            self.passed += 1
 
 
 @dataclass(slots=True)
@@ -97,6 +124,7 @@ class _ConversionState:
     malformed_record_types: Counter[str] = field(default_factory=Counter)
     dtr_messages: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    accumulators_by_column_id: dict[str, ColumnAccumulator] = field(default_factory=dict)
 
 
 def _clean_text(value: Any) -> str | None:
@@ -214,7 +242,7 @@ def _value_fails_limits(value: float | None, low: float | None, high: float | No
 def csv_name_for_source(source_name: str) -> str:
     name = Path(source_name).name
     suffixes = Path(name).suffixes
-    while suffixes and suffixes[-1].lower() in {".gz", ".xz", ".bz2"}:
+    while suffixes and suffixes[-1].lower() in (COMPRESSED_SUFFIXES | ARCHIVE_SUFFIXES | SUPPORTED_INPUT_SUFFIXES):
         name = Path(name).with_suffix("").name
         suffixes = Path(name).suffixes
     stem = Path(name).stem
@@ -227,6 +255,183 @@ def dtr_name_for_source(source_name: str) -> str:
 
 def consistency_name_for_source(source_name: str) -> str:
     return f"{Path(csv_name_for_source(source_name)).stem}_conversion_consistency.json"
+
+
+def _source_kind_for_name(source_name: str) -> str:
+    suffixes = [suffix.lower() for suffix in Path(source_name).suffixes]
+    while suffixes and suffixes[-1] in (COMPRESSED_SUFFIXES | ARCHIVE_SUFFIXES):
+        suffixes.pop()
+    if suffixes and suffixes[-1] == ".eff":
+        return "eff"
+    return "stdf"
+
+
+def _is_tar_archive_path(path: Path) -> bool:
+    suffixes = {suffix.lower() for suffix in path.suffixes}
+    if ".tar" in suffixes:
+        return True
+    try:
+        return tarfile.is_tarfile(path)
+    except (OSError, tarfile.TarError):
+        return False
+
+
+def _select_archive_member_name(path: Path) -> str:
+    with tarfile.open(path, "r:*") as archive:
+        regular_members = [member for member in archive.getmembers() if member.isfile()]
+        if not regular_members:
+            raise ValueError(f"Archive does not contain any regular files: {path}")
+
+        preferred_members = [
+            member
+            for member in regular_members
+            if any(Path(member.name).name.lower().endswith(ext) for ext in SUPPORTED_INPUT_SUFFIXES)
+        ]
+        if len(preferred_members) == 1:
+            return preferred_members[0].name
+        if len(preferred_members) > 1:
+            preferred_members.sort(key=lambda member: (Path(member.name).suffix.lower() != ".std", len(member.name), member.name.lower()))
+            return preferred_members[0].name
+
+        if len(regular_members) == 1:
+            return regular_members[0].name
+
+        sample_names = ", ".join(member.name for member in regular_members[:5])
+        raise ValueError(f"Could not determine which archive member to convert from {path}. Candidates: {sample_names}")
+
+
+def _cell_value(row: Sequence[str], index_by_name: dict[str, int], column_name: str) -> str | None:
+    idx = index_by_name.get(column_name)
+    if idx is None or idx >= len(row):
+        return None
+    return row[idx]
+
+
+def _normalize_eff_row(row: Sequence[str], expected_len: int) -> list[str]:
+    values = [str(cell).strip() for cell in row]
+    if len(values) < expected_len:
+        values.extend([""] * (expected_len - len(values)))
+    return values[:expected_len]
+
+
+def _resolve_eff_first_fail_test(raw_value: str | None, test_names_by_column_id: dict[str, str]) -> str | None:
+    text = _clean_text(raw_value)
+    if not text:
+        return None
+    return test_names_by_column_id.get(text, text)
+
+
+def _build_eff_state(reader: Iterable[Sequence[str]]) -> _ConversionState:
+    state = _ConversionState()
+    state.record_counts["EFF"] += 1
+
+    header_row: list[str] | None = None
+    meta_rows: dict[str, list[str]] = {}
+    first_data_row: list[str] | None = None
+
+    for raw_row in reader:
+        if not raw_row:
+            continue
+        key = str(raw_row[0]).strip()
+        if header_row is None:
+            if key.startswith("<+EFF:"):
+                header_row = [str(cell).strip() for cell in raw_row]
+            continue
+
+        normalized_row = _normalize_eff_row(raw_row, len(header_row))
+        key = normalized_row[0]
+        if key.startswith("<"):
+            meta_rows[key] = normalized_row
+            continue
+        first_data_row = normalized_row
+        break
+
+    if header_row is None:
+        raise ValueError("EFF input is missing the <+EFF:...> header row")
+
+    index_by_name = {name: idx for idx, name in enumerate(header_row) if name}
+    numeric_indices = [idx for idx, name in enumerate(header_row) if idx > 0 and str(name).isdigit()]
+    if not numeric_indices:
+        raise ValueError("EFF input does not contain numeric test columns")
+
+    pname_row = meta_rows.get("<+PName>", [""] * len(header_row))
+    unit_row = meta_rows.get("<Unit>", [""] * len(header_row))
+    usl_row = meta_rows.get("<USL>", [""] * len(header_row))
+    lsl_row = meta_rows.get("<LSL>", [""] * len(header_row))
+
+    columns_by_index: dict[int, TestColumn] = {}
+    test_names_by_column_id: dict[str, str] = {}
+    for idx in numeric_indices:
+        header_name = header_row[idx]
+        test_num = _to_int(header_name)
+        if test_num is None:
+            continue
+        column = _get_or_create_test_column(
+            columns_by_key=state.columns_by_key,
+            ordered_columns=state.ordered_columns,
+            used_column_ids=state.used_column_ids,
+            test_num=test_num,
+            test_name=_clean_text(pname_row[idx]) or header_name,
+            unit=_clean_text(unit_row[idx]) or "",
+            low=_to_float(lsl_row[idx]),
+            high=_to_float(usl_row[idx]),
+            variant="EFF",
+        )
+        columns_by_index[idx] = column
+        test_names_by_column_id[header_name] = column.test_name
+
+    def process_data_row(row: Sequence[str]) -> None:
+        normalized = _normalize_eff_row(row, len(header_row))
+        unit_id = _to_int(_cell_value(normalized, index_by_name, "VNr"))
+        if unit_id is None:
+            unit_id = state.next_unit_id
+        state.next_unit_id = max(state.next_unit_id, unit_id + 1)
+
+        pf_value = _clean_text(_cell_value(normalized, index_by_name, "PF"))
+        if pf_value:
+            pf_value = pf_value[:1].upper()
+
+        part = PartRow(
+            unit_id=unit_id,
+            site_num=_to_int(_cell_value(normalized, index_by_name, "SITE_NUM")),
+            wafer=_clean_text(_cell_value(normalized, index_by_name, "WAFER")),
+            x=_to_int(_cell_value(normalized, index_by_name, "X")),
+            y=_to_int(_cell_value(normalized, index_by_name, "Y")),
+            lot=_clean_text(_cell_value(normalized, index_by_name, "LOT")),
+            sublot=_clean_text(_cell_value(normalized, index_by_name, "SUBLOT")),
+            chip_id=_clean_text(_cell_value(normalized, index_by_name, "CHIP_ID")),
+            pf=pf_value,
+            first_fail_test=_resolve_eff_first_fail_test(
+                _cell_value(normalized, index_by_name, "FIRST_FAIL_TEST"),
+                test_names_by_column_id,
+            ),
+        )
+
+        for idx, column in columns_by_index.items():
+            value = _to_float(normalized[idx])
+            part.measurements[column.column_id] = value
+            _update_column_accumulator(state, column=column, value=value)
+            if part.first_fail_test is None:
+                part.first_fail_test = _detect_failed_test_name(
+                    column.test_name,
+                    value,
+                    column.low,
+                    column.high,
+                )
+
+        if part.pf is None:
+            part.pf = "F" if part.first_fail_test else "P"
+        state.parts.append(part)
+        state.record_counts["EFF_ROW"] += 1
+
+    if first_data_row is not None:
+        process_data_row(first_data_row)
+    for raw_row in reader:
+        if not raw_row:
+            continue
+        process_data_row(raw_row)
+
+    return state
 
 
 def _unique_numeric_column_id(test_num: int, used: set[str]) -> str:
@@ -367,6 +572,71 @@ def _build_summary_row(name: str, ordered_columns: Sequence[TestColumn], parts: 
     return row
 
 
+def _summary_value_from_accumulator(name: str, column: TestColumn, accumulator: ColumnAccumulator | None) -> str:
+    if name == "Test Name":
+        return column.test_name
+    if name == "Low":
+        return _format_number(column.low)
+    if name == "High":
+        return _format_number(column.high)
+    if name == "Unit":
+        return column.unit
+    if accumulator is None or accumulator.count <= 0:
+        return ""
+
+    mean = accumulator.value_sum / accumulator.count
+    if name == "Mean":
+        return _format_number(mean)
+    if name == "Yield":
+        return _format_number(100.0 * accumulator.passed / accumulator.count)
+
+    stddev: float | None = None
+    if accumulator.count >= 2:
+        variance = (accumulator.value_sum_sq - ((accumulator.value_sum * accumulator.value_sum) / accumulator.count)) / (accumulator.count - 1)
+        variance = max(0.0, float(variance))
+        stddev = float(math.sqrt(variance))
+
+    if name == "Stddev":
+        return _format_number(stddev)
+    if name == "Cpk":
+        if stddev is None or stddev <= 0.0 or (column.low is None and column.high is None):
+            return ""
+        candidates: list[float] = []
+        if column.high is not None:
+            candidates.append((float(column.high) - mean) / (3.0 * stddev))
+        if column.low is not None:
+            candidates.append((mean - float(column.low)) / (3.0 * stddev))
+        finite = [float(value) for value in candidates if math.isfinite(value)]
+        return _format_number(min(finite) if finite else None)
+    return ""
+
+
+def _build_summary_row_from_accumulators(
+    name: str,
+    ordered_columns: Sequence[TestColumn],
+    accumulators_by_column_id: dict[str, ColumnAccumulator],
+) -> list[str]:
+    row = [name] + ["" for _ in META_COLUMNS[1:]]
+    for column in ordered_columns:
+        row.append(_summary_value_from_accumulator(name, column, accumulators_by_column_id.get(column.column_id)))
+    return row
+
+
+def _update_column_accumulator(
+    state: _ConversionState,
+    *,
+    column: TestColumn,
+    value: float | None,
+) -> None:
+    if value is None:
+        return
+    accumulator = state.accumulators_by_column_id.get(column.column_id)
+    if accumulator is None:
+        accumulator = ColumnAccumulator()
+        state.accumulators_by_column_id[column.column_id] = accumulator
+    accumulator.add(value, low=column.low, high=column.high)
+
+
 def _detect_failed_test_name(test_name: str | None, value: float | None, low: float | None, high: float | None, *flags: Any) -> str | None:
     if _value_fails_limits(value, low, high) or _stdf_flag_indicates_fail(*flags):
         return test_name or None
@@ -470,6 +740,7 @@ def _process_record(state: _ConversionState, record_name: str, record_dict: dict
             variant="PTR",
         )
         current_part.measurements[column.column_id] = result
+        _update_column_accumulator(state, column=column, value=result)
         if current_part.first_fail_test is None:
             current_part.first_fail_test = _detect_failed_test_name(test_name, result, low, high, test_flag, param_flag)
         return
@@ -504,6 +775,7 @@ def _process_record(state: _ConversionState, record_name: str, record_dict: dict
             variant=f"MPR:{pin_suffix}",
         )
         current_part.measurements[column.column_id] = result
+        _update_column_accumulator(state, column=column, value=result)
         if current_part.first_fail_test is None:
             current_part.first_fail_test = _detect_failed_test_name(expanded_name, result, low, high, test_flag, param_flag)
 
@@ -526,7 +798,13 @@ def _write_conversion_output(
         writer = csv.writer(handle, delimiter=DELIMITER)
         writer.writerow(header)
         for summary_name in SUMMARY_ROWS:
-            writer.writerow(_build_summary_row(summary_name, state.ordered_columns, state.parts))
+            writer.writerow(
+                _build_summary_row_from_accumulators(
+                    summary_name,
+                    state.ordered_columns,
+                    state.accumulators_by_column_id,
+                )
+            )
         for part in state.parts:
             row = [
                 _format_number(part.unit_id),
@@ -564,6 +842,10 @@ def _write_conversion_output(
             + ", ".join(f"{name}={count}" for name, count in sorted(state.malformed_record_types.items()))
         )
 
+    pir_count = state.record_counts.get("PIR", 0)
+    prr_count = state.record_counts.get("PRR", 0)
+    has_part_records = pir_count > 0 or prr_count > 0
+
     consistency_file = artifact_folder / consistency_name_for_source(output_csv_path.name)
     consistency_payload = {
         "csv_file": str(output_csv_path),
@@ -574,9 +856,9 @@ def _write_conversion_output(
         "malformed_record_types": dict(sorted(state.malformed_record_types.items())),
         "dtr_record_count": len(state.dtr_messages),
         "checks": {
-            "pir_equals_prr": state.record_counts.get("PIR", 0) == state.record_counts.get("PRR", 0),
-            "pir_equals_generated_rows": state.record_counts.get("PIR", 0) == len(state.parts),
-            "prr_equals_generated_rows": state.record_counts.get("PRR", 0) == len(state.parts),
+            "pir_equals_prr": True if not has_part_records else pir_count == prr_count,
+            "pir_equals_generated_rows": True if not has_part_records else pir_count == len(state.parts),
+            "prr_equals_generated_rows": True if not has_part_records else prr_count == len(state.parts),
             "all_rows_have_measurements": all(bool(part.measurements) for part in state.parts),
         },
         "warnings": warnings,
@@ -611,15 +893,47 @@ def _write_conversion_output(
     )
 
 
-def _open_stdf_binary(path: Path):
-    suffixes = [suffix.lower() for suffix in path.suffixes]
-    if suffixes and suffixes[-1] == ".gz":
-        return gzip.open(path, "rb")
-    if suffixes and suffixes[-1] == ".bz2":
-        return bz2.open(path, "rb")
-    if suffixes and suffixes[-1] == ".xz":
-        return lzma.open(path, "rb")
-    return path.open("rb")
+@contextlib.contextmanager
+def _open_stdf_binary(path: Path, *, archive_member_name: str | None = None):
+    with contextlib.ExitStack() as stack:
+        if archive_member_name is not None:
+            archive = stack.enter_context(tarfile.open(path, "r:*"))
+            member = archive.getmember(archive_member_name)
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise FileNotFoundError(f"Could not open archive member {archive_member_name!r} from {path}")
+            stack.callback(extracted.close)
+            yield extracted
+            return
+
+        suffixes = [suffix.lower() for suffix in path.suffixes]
+        if suffixes and suffixes[-1] == ".gz":
+            yield stack.enter_context(gzip.open(path, "rb"))
+            return
+        if suffixes and suffixes[-1] == ".bz2":
+            yield stack.enter_context(bz2.open(path, "rb"))
+            return
+        if suffixes and suffixes[-1] == ".xz":
+            yield stack.enter_context(lzma.open(path, "rb"))
+            return
+        yield stack.enter_context(path.open("rb"))
+
+
+@contextlib.contextmanager
+def _open_eff_text(path: Path, *, archive_member_name: str | None = None):
+    with contextlib.ExitStack() as stack:
+        if archive_member_name is not None:
+            archive = stack.enter_context(tarfile.open(path, "r:*"))
+            member = archive.getmember(archive_member_name)
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise FileNotFoundError(f"Could not open archive member {archive_member_name!r} from {path}")
+            stack.callback(extracted.close)
+            text_stream = stack.enter_context(io.TextIOWrapper(extracted, encoding="latin1", errors="replace", newline=""))
+            yield text_stream
+            return
+
+        yield stack.enter_context(path.open("r", encoding="latin1", errors="replace", newline=""))
 
 
 def _record_dict_from_pystdf(rec_type: Any, fields: list[Any]) -> dict[str, Any]:
@@ -632,6 +946,7 @@ def _convert_stdf_file_with_pystdf(
     output_csv_path: Path,
     *,
     artifacts_output_folder: Path | None = None,
+    archive_member_name: str | None = None,
 ) -> ConversionSummary:
     try:
         import pystdf.V4 as V4
@@ -702,13 +1017,32 @@ def _convert_stdf_file_with_pystdf(
                 return
             _process_record(state, record_name, _record_dict_from_pystdf(rec_type, fields))
 
-    with _open_stdf_binary(stdf_path) as handle:
+    with _open_stdf_binary(stdf_path, archive_member_name=archive_member_name) as handle:
         _PystdfConverter(handle).parse()
 
     return _write_conversion_output(
         state,
         output_csv_path,
         source_path=stdf_path,
+        artifacts_output_folder=artifacts_output_folder,
+    )
+
+
+def _convert_eff_file(
+    eff_path: Path,
+    output_csv_path: Path,
+    *,
+    artifacts_output_folder: Path | None = None,
+    archive_member_name: str | None = None,
+) -> ConversionSummary:
+    with _open_eff_text(eff_path, archive_member_name=archive_member_name) as handle:
+        reader = csv.reader(handle, delimiter=DELIMITER)
+        state = _build_eff_state(reader)
+
+    return _write_conversion_output(
+        state,
+        output_csv_path,
+        source_path=eff_path,
         artifacts_output_folder=artifacts_output_folder,
     )
 
@@ -744,9 +1078,38 @@ def convert_stdf_file(
     *,
     artifacts_output_folder: Path | None = None,
 ) -> ConversionSummary:
+    archive_member_name: str | None = None
+    if _is_tar_archive_path(stdf_path):
+        archive_member_name = _select_archive_member_name(stdf_path)
+        source_kind = _source_kind_for_name(Path(archive_member_name).name)
+    else:
+        source_kind = _source_kind_for_name(stdf_path.name)
+
+    if source_kind == "eff":
+        return _convert_eff_file(
+            stdf_path,
+            output_csv_path,
+            artifacts_output_folder=artifacts_output_folder,
+            archive_member_name=archive_member_name,
+        )
+
     return _convert_stdf_file_with_pystdf(
         stdf_path,
         output_csv_path,
+        artifacts_output_folder=artifacts_output_folder,
+        archive_member_name=archive_member_name,
+    )
+
+
+def _convert_stdf_file_job(
+    stdf_path_str: str,
+    output_csv_path_str: str,
+    artifacts_output_folder_str: str | None,
+) -> ConversionSummary:
+    artifacts_output_folder = None if artifacts_output_folder_str is None else Path(artifacts_output_folder_str)
+    return convert_stdf_file(
+        Path(stdf_path_str),
+        Path(output_csv_path_str),
         artifacts_output_folder=artifacts_output_folder,
     )
 
@@ -795,28 +1158,74 @@ def convert_stdf_folder(
     else:
         print(f"[STDF files]   0% (0/{total_files}) | starting STDF to CSV conversion")
 
-    for file_index, stdf_file in enumerate(stdf_files, start=1):
+    for stdf_file in stdf_files:
         if not stdf_file.exists():
             raise FileNotFoundError(f"STDF file not found: {stdf_file}")
-        percent = int(round(100.0 * (file_index - 1) / total_files)) if total_files > 0 else 100
-        print(f"[STDF files] {percent:3d}% ({file_index - 1}/{total_files}) | converting {stdf_file.name}")
-        output_csv_path = output_folder / csv_name_for_source(stdf_file.name)
-        summary = convert_stdf_file(
+
+    job_specs = [
+        (
             stdf_file,
-            output_csv_path,
-            artifacts_output_folder=artifacts_output_folder,
+            output_folder / csv_name_for_source(stdf_file.name),
         )
-        output_files.extend(summary.output_files)
-        dtr_files.extend(summary.dtr_files)
-        consistency_files.extend(summary.consistency_files)
-        warnings.extend(summary.warnings)
-        file_results.extend(summary.file_results)
-        converted_parts += summary.converted_parts
-        converted_tests += summary.converted_tests
-        print(
-            f"[STDF files] {int(round(100.0 * file_index / total_files)):3d}% ({file_index}/{total_files})"
-            f" | finished {stdf_file.name}"
-        )
+        for stdf_file in stdf_files
+    ]
+
+    max_workers = min(total_files, max(1, os.cpu_count() or 1))
+    completed_count = 0
+
+    if total_files <= 1 or max_workers <= 1:
+        for stdf_file, output_csv_path in job_specs:
+            percent = int(round(100.0 * completed_count / total_files)) if total_files > 0 else 100
+            print(f"[STDF files] {percent:3d}% ({completed_count}/{total_files}) | converting {stdf_file.name}")
+            summary = convert_stdf_file(
+                stdf_file,
+                output_csv_path,
+                artifacts_output_folder=artifacts_output_folder,
+            )
+            completed_count += 1
+            output_files.extend(summary.output_files)
+            dtr_files.extend(summary.dtr_files)
+            consistency_files.extend(summary.consistency_files)
+            warnings.extend(summary.warnings)
+            file_results.extend(summary.file_results)
+            converted_parts += summary.converted_parts
+            converted_tests += summary.converted_tests
+            print(
+                f"[STDF files] {int(round(100.0 * completed_count / total_files)):3d}% ({completed_count}/{total_files})"
+                f" | finished {stdf_file.name}"
+            )
+    else:
+        print(f"[STDF files]   0% (0/{total_files}) | converting with {max_workers} worker processes")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    _convert_stdf_file_job,
+                    str(stdf_file),
+                    str(output_csv_path),
+                    None if artifacts_output_folder is None else str(artifacts_output_folder),
+                ): (stdf_file, output_csv_path)
+                for stdf_file, output_csv_path in job_specs
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                stdf_file, _ = future_map[future]
+                summary = future.result()
+                completed_count += 1
+                output_files.extend(summary.output_files)
+                dtr_files.extend(summary.dtr_files)
+                consistency_files.extend(summary.consistency_files)
+                warnings.extend(summary.warnings)
+                file_results.extend(summary.file_results)
+                converted_parts += summary.converted_parts
+                converted_tests += summary.converted_tests
+                print(
+                    f"[STDF files] {int(round(100.0 * completed_count / total_files)):3d}% ({completed_count}/{total_files})"
+                    f" | finished {stdf_file.name}"
+                )
+
+        output_files.sort(key=lambda item: item.name.lower())
+        dtr_files.sort(key=lambda item: item.name.lower())
+        consistency_files.sort(key=lambda item: item.name.lower())
+        file_results.sort(key=lambda item: item.csv_file.name.lower())
 
     return ConversionSummary(
         converted_files=len(output_files),
@@ -831,11 +1240,11 @@ def convert_stdf_folder(
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Convert STDF files into the flat CSV format expected by Tests_Data_Analysis.py")
-    parser.add_argument("--input-folder", type=Path, required=True, help="Folder containing .stdf/.std files")
+    parser = argparse.ArgumentParser(description="Convert STDF/EFF inputs into the flat CSV format expected by Tests_Data_Analysis.py")
+    parser.add_argument("--input-folder", type=Path, required=True, help="Folder containing .stdf/.std/.eff inputs")
     parser.add_argument("--output-folder", type=Path, required=True, help="Folder where flat CSV files will be written")
-    parser.add_argument("--single-file", type=str, default=None, help="Optional single STDF file name to convert")
-    parser.add_argument("--max-files", type=int, default=None, help="Optional maximum number of STDF files to convert")
+    parser.add_argument("--single-file", type=str, default=None, help="Optional single input file name to convert")
+    parser.add_argument("--max-files", type=int, default=None, help="Optional maximum number of input files to convert")
     parser.add_argument(
         "--artifacts-folder",
         type=Path,
@@ -846,12 +1255,13 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--pattern",
         action="append",
         dest="patterns",
-        help="Optional glob pattern(s) for STDF discovery. Can be repeated.",
+        help="Optional glob pattern(s) for supported input discovery. Can be repeated.",
     )
     return parser
 
 
 def main() -> int:
+    multiprocessing.freeze_support()
     parser = _build_argument_parser()
     args = parser.parse_args()
     summary = convert_stdf_folder(
@@ -862,7 +1272,7 @@ def main() -> int:
         max_files=args.max_files,
         artifacts_output_folder=args.artifacts_folder,
     )
-    print(f"Converted {summary.converted_files} STDF file(s) into {args.output_folder}")
+    print(f"Converted {summary.converted_files} input file(s) into {args.output_folder}")
     print(f"  Parts exported: {summary.converted_parts}")
     print(f"  Numeric tests exported: {summary.converted_tests}")
     for output_file in summary.output_files:

@@ -1,0 +1,16 @@
+input_folder: PROD_Data
+output_folder: PROD_Data/Outputs
+convert_stdf_before_analysis: true
+modules:
+  - SCAN
+  - FUSE
+  - PSUP
+  - RCGX
+  - DPLL
+  - TXPA
+  - RXAD
+  - RXGT
+yield_threshold: 100.0
+cpk_low: 1.67
+cpk_high: 20.0
+generate_correlation_report: false

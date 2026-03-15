@@ -45,15 +45,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                     yield_threshold: 100.0
                     cpk_low: 1.67
                     cpk_high: 20.0
-                    outlier_mad_multiplier: 6.0
-                    max_files: 1
-                    single_file: {SAMPLE_FILE_NAME}
-                    encoding: latin1
                     generate_correlation_report: true
-                    correlation_methods:
-                      - pearson
-                    pearson_abs_min_for_report: 0.5
-                    wafermap_circle_area_mult: 1.0
                     """
                 ),
                 encoding="utf-8",
@@ -91,7 +83,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             png_files = list((output_dir / "cdf_plots").rglob("*.png"))
             self.assertGreaterEqual(len(png_files), 2, "Expected CDF and wafer map PNG outputs")
             html_files = list((output_dir / "cdf_plots").rglob("*.html"))
-            self.assertEqual(len(html_files), 0, "Did not expect interactive wafer map HTML without wafer/XY signature")
+            self.assertEqual(len(html_files), 0, "Did not expect any interactive wafer map HTML outputs")
 
             workbook = load_workbook(yield_report, read_only=True, data_only=True)
             try:
@@ -110,42 +102,57 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(overview_worksheet["B7"].value, 1)
                 self.assertEqual(overview_worksheet["A9"].value, "High-priority tests")
                 self.assertEqual(overview_worksheet["A20"].value, "Module level summary")
-                self.assertEqual(overview_worksheet["C21"].value, "Fails")
-                self.assertEqual(overview_worksheet["G21"].value, "Unique Values")
-                self.assertEqual(overview_worksheet["A22"].value, "TXPA")
-                self.assertEqual(overview_worksheet["B22"].value, "Fails + Cpk<1.67")
-                self.assertEqual(overview_worksheet["A23"].value, "DPLL")
-                self.assertEqual(overview_worksheet["B23"].value, "OK")
+                self.assertEqual(overview_worksheet["D21"].value, "Fails")
+                self.assertEqual(overview_worksheet["H21"].value, "Unique Values")
+                self.assertEqual(overview_worksheet["I21"].value, "Skewness")
+                self.assertEqual(overview_worksheet["A22"].value, SAMPLE_FILE_NAME)
+                self.assertEqual(overview_worksheet["B22"].value, "TXPA")
+                self.assertEqual(overview_worksheet["C22"].value, "Fails + Cpk<1.67")
+                self.assertEqual(overview_worksheet["A23"].value, SAMPLE_FILE_NAME)
+                self.assertEqual(overview_worksheet["B23"].value, "DPLL")
+                self.assertEqual(overview_worksheet["C23"].value, "OK")
                 self.assertEqual(overview_worksheet["A25"].value, "File summary")
                 self.assertEqual(len(data_rows), 1, "Expected exactly one affected test row in the smoke sample")
-                self.assertEqual(worksheet["F1"].value, "Fail Chips")
-                self.assertEqual(worksheet["H1"].value, "Fails")
-                self.assertEqual(worksheet["H1"].fill.fgColor.rgb, "00FFFF00")
-                self.assertEqual(worksheet["I1"].value, "Cpk<1.67")
-                self.assertEqual(worksheet["L1"].value, "Multimodality")
-                self.assertEqual(worksheet["M1"].value, "Unique Values")
-                self.assertEqual(worksheet["H1"].alignment.horizontal, "center")
-                self.assertEqual(worksheet["H1"].alignment.vertical, "center")
-                self.assertEqual(worksheet["H1"].alignment.textRotation, 90)
-                self.assertEqual(plots_worksheet["C1"].value, "Wafer map (interactive HTML)")
-                self.assertEqual(plots_worksheet["D1"].value, "Wafer map (static PNG)")
-                self.assertEqual(plots_worksheet["E1"].value, "CDF by Site")
-                self.assertEqual(plots_worksheet["C3"].value, "Not generated")
-                self.assertEqual(plots_worksheet["D3"].value, "Open wafer PNG")
-                self.assertEqual(plots_worksheet["E3"].value, "Not generated")
+                self.assertEqual(worksheet["E1"].value, "CDF Plot")
+                self.assertEqual(worksheet["F1"].value, "Yield (%)")
+                self.assertEqual(worksheet["G1"].value, "Cpk")
+                self.assertEqual(worksheet["H1"].value, "Fail Chips")
+                self.assertEqual(worksheet["I1"].value, "Fails")
+                self.assertEqual(worksheet["I1"].fill.fgColor.rgb, "00FFFF00")
+                self.assertEqual(worksheet["J1"].value, "Cpk<1.67")
+                self.assertEqual(worksheet["M1"].value, "Multimodality")
+                self.assertEqual(worksheet["N1"].value, "Unique Values")
+                self.assertEqual(worksheet["O1"].value, "Skewness")
+                self.assertEqual(worksheet["R1"].value, "Findings")
+                self.assertEqual(worksheet["Y1"].value, "TE notes")
+                self.assertEqual(worksheet["I1"].alignment.horizontal, "center")
+                self.assertEqual(worksheet["I1"].alignment.vertical, "center")
+                self.assertEqual(worksheet["I1"].alignment.textRotation, 90)
+                self.assertEqual(plots_worksheet["C1"].value, "CDF zoomed")
+                self.assertEqual(plots_worksheet["D1"].value, "CDF by Site zoomed")
+                self.assertEqual(plots_worksheet["E1"].value, "Wafer map (static PNG)")
+                self.assertEqual(plots_worksheet.max_column, 5)
+                self.assertEqual(plots_worksheet["C3"].value, "Open zoomed CDF PNG")
+                self.assertEqual(plots_worksheet["D3"].value, "Not generated")
+                self.assertEqual(plots_worksheet["E3"].value, "Open wafer PNG")
+                self.assertIsNone(plots_worksheet["F1"].value)
+                self.assertIsNone(plots_worksheet["F3"].value)
 
                 txpa_row = data_rows[0]
                 self.assertEqual(txpa_row[0], "TXPA")
                 self.assertEqual(txpa_row[1], 520123)
                 self.assertEqual(txpa_row[2], "TXPA_OUTPUT_PWR")
-                self.assertEqual(txpa_row[5], 2)
-                self.assertEqual(txpa_row[7], "YES")
+                self.assertEqual(txpa_row[4], "View")
+                self.assertEqual(txpa_row[6], 1.2)
+                self.assertEqual(txpa_row[7], 2)
                 self.assertEqual(txpa_row[8], "YES")
-                self.assertEqual(txpa_row[9], "NO")
+                self.assertEqual(txpa_row[9], "YES")
                 self.assertEqual(txpa_row[10], "NO")
-                self.assertEqual(txpa_row[11], 1)
-                self.assertEqual(txpa_row[12], "YES")
-                self.assertEqual(txpa_row[16], "View")
+                self.assertEqual(txpa_row[11], "NO")
+                self.assertEqual(txpa_row[12], 1)
+                self.assertEqual(txpa_row[13], "YES")
+                self.assertEqual(txpa_row[14], "NO")
+                self.assertEqual(txpa_row[24], None)
             finally:
                 workbook.close()
 
@@ -157,36 +164,52 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 overview_cf_rules = list(overview_with_formatting.conditional_formatting)
                 self.assertTrue(cf_rules, "Expected conditional formatting rules in yield workbook")
                 self.assertTrue(
-                    any(str(rule.sqref) in {"F2", "F2:F2"} for rule in cf_rules),
-                    "Expected Fail Chips conditional formatting on column F",
-                )
-                self.assertTrue(
                     any(str(rule.sqref) in {"H2", "H2:H2"} for rule in cf_rules),
-                    "Expected Fails YES/NO conditional formatting on column H",
+                    "Expected Fail Chips conditional formatting on column H",
                 )
                 self.assertTrue(
                     any(str(rule.sqref) in {"I2", "I2:I2"} for rule in cf_rules),
-                    "Expected Cpk<1.67 YES/NO conditional formatting on column I",
+                    "Expected Fails YES/NO conditional formatting on column I",
                 )
                 self.assertTrue(
-                    any(str(rule.sqref) in {"L2", "L2:L2"} for rule in cf_rules),
-                    "Expected Multimodality conditional formatting on column L",
+                    any(str(rule.sqref) in {"J2", "J2:J2"} for rule in cf_rules),
+                    "Expected Cpk<1.67 YES/NO conditional formatting on column J",
                 )
-                self.assertEqual(worksheet_with_formatting["H2"].fill.fgColor.rgb, "00FFC7CE")
+                self.assertTrue(
+                    any(str(rule.sqref) in {"M2", "M2:M2"} for rule in cf_rules),
+                    "Expected Multimodality conditional formatting on column M",
+                )
                 self.assertEqual(worksheet_with_formatting["I2"].fill.fgColor.rgb, "00FFC7CE")
-                self.assertEqual(worksheet_with_formatting["J2"].fill.fgColor.rgb, "00C6EFCE")
-                self.assertEqual(worksheet_with_formatting["M2"].fill.fgColor.rgb, "00C6EFCE")
-                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["H"].width), 12.0)
+                self.assertEqual(worksheet_with_formatting["J2"].fill.fgColor.rgb, "00FFC7CE")
+                self.assertEqual(worksheet_with_formatting["K2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["N2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["O2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["S2"].number_format, "0.######")
+                self.assertEqual(worksheet_with_formatting["T2"].number_format, "0.######")
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["S"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["T"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["U"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["V"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["W"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["X"].hidden))
+                self.assertFalse(bool(worksheet_with_formatting.column_dimensions["E"].hidden))
+                self.assertFalse(bool(worksheet_with_formatting.column_dimensions["Y"].hidden))
+                self.assertIsNone(worksheet_with_formatting["Y2"].fill.patternType)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["I"].width), 12.0)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["J"].width), 12.0)
+                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["K"].width), 12.0)
                 self.assertGreater(float(worksheet_with_formatting.column_dimensions["C"].width), 12.0)
                 self.assertTrue(
-                    any(str(rule.sqref) in {"C22:C23", "C22:C23"} for rule in overview_cf_rules),
-                    "Expected module-level Fails color scale formatting on column C",
+                    any(str(rule.sqref) in {"D22:D23", "D22:D23"} for rule in overview_cf_rules),
+                    "Expected module-level Fails color scale formatting on column D",
                 )
                 self.assertTrue(
-                    any(str(rule.sqref) in {"G22:G23", "G22:G23"} for rule in overview_cf_rules),
-                    "Expected module-level Unique Values color scale formatting on column G",
+                    any(str(rule.sqref) in {"H22:H23", "H22:H23"} for rule in overview_cf_rules),
+                    "Expected module-level Unique Values color scale formatting on column H",
+                )
+                self.assertTrue(
+                    any(str(rule.sqref) in {"I22:I23", "I22:I23"} for rule in overview_cf_rules),
+                    "Expected module-level Skewness color scale formatting on column I",
                 )
             finally:
                 workbook_with_formatting.close()

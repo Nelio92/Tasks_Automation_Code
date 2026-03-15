@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local analysis outputs and build artifacts
+IFX_Scripts/Test_Data_Analysis/Outputs/
+IFX_Scripts/Test_Data_Analysis/build/
+IFX_Scripts/Test_Data_Analysis/dist/
+IFX_Scripts/Test_Data_Analysis/release_pyinstaller/TestDataAnalysis.exe
+IFX_Scripts/Test_Data_Analysis/release_pyinstaller/*.zip
+**/Outputs/
+**/build/
+**/dist/
+**/plots/
+**/cdf_plots/
+**/converted_csv/
+**/_converted_tmp/
+**/artifacts/
+
+# Raw tester data and large binary inputs
+*.std
+*.stdf
+*.eff
+*.std.gz
+*.stdf.gz
+*.eff.gz
+*.std.tar.gz
+*.stdf.tar.gz
+*.eff.tar.gz
+
+# Generated report/binary artifacts
+*.png
+*.exe
+*.pkg
+*.pyz
+*.toc

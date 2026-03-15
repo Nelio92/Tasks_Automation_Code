@@ -627,6 +627,7 @@ def _cdf_plot_png(
     proposed_u6: float | None = None,
     proposed_l12: float | None = None,
     proposed_u12: float | None = None,
+    zoom_to_limits: bool = False,
 ) -> None:
     import pandas as pd
     import numpy as np
@@ -706,6 +707,11 @@ def _cdf_plot_png(
     if proposed_u12 is not None and np.isfinite(proposed_u12):
         ax.axvline(float(proposed_u12), color="#9467BD", linestyle=":", linewidth=1.2, label=f"UTL 12s={_fmt_1dp(float(proposed_u12))}")
 
+    if zoom_to_limits:
+        zoom_limits = _resolve_main_distribution_zoom_limits(v)
+        if zoom_limits is not None:
+            ax.set_xlim(*zoom_limits)
+
     ax.grid(True, alpha=0.3)
     if has_spec:
         ax.set_title(title + f"\nFail chips: {n_fail}/{v.size}")
@@ -720,6 +726,108 @@ def _cdf_plot_png(
     plt.close(fig)
 
 
+def _cdf_plot_png_pair(
+    values,
+    *,
+    title: str,
+    out_path: Path,
+    zoomed_out_path: Path | None = None,
+    low_limit: float | None = None,
+    high_limit: float | None = None,
+    proposed_l6: float | None = None,
+    proposed_u6: float | None = None,
+    proposed_l12: float | None = None,
+    proposed_u12: float | None = None,
+) -> None:
+    import numpy as np
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    v_raw = np.asarray(values, dtype=float)
+    v = v_raw[np.isfinite(v_raw)]
+    if v.size == 0:
+        return
+
+    low = -np.inf if low_limit is None else float(low_limit)
+    high = np.inf if high_limit is None else float(high_limit)
+    has_spec = low_limit is not None or high_limit is not None
+    fail_mask = (v < low) | (v > high) if has_spec else np.zeros(v.size, dtype=bool)
+    order = np.argsort(v)
+    v = v[order]
+    fail_mask = fail_mask[order]
+    y = np.arange(1, v.size + 1) / v.size
+    n_fail = int(np.count_nonzero(fail_mask))
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=140)
+
+    pass_mask = ~fail_mask
+    if np.any(pass_mask):
+        ax.plot(
+            v[pass_mask],
+            y[pass_mask],
+            linestyle="None",
+            marker=".",
+            markersize=3.0,
+            alpha=0.80,
+            color="#1F77B4",
+            label=f"Pass chips={int(np.count_nonzero(pass_mask))}",
+        )
+    if np.any(fail_mask):
+        ax.plot(
+            v[fail_mask],
+            y[fail_mask],
+            linestyle="None",
+            marker="o",
+            markersize=4.4,
+            alpha=0.95,
+            markerfacecolor="#D62728",
+            markeredgecolor="#D62728",
+            label=f"Fail chips={n_fail}",
+        )
+    elif not np.any(pass_mask):
+        ax.plot(v, y, linestyle="None", marker=".", markersize=3.0, alpha=0.85, label="Data")
+
+    if low_limit is not None and np.isfinite(low_limit):
+        ax.axvline(float(low_limit), color="#D62728", linestyle="-", linewidth=1.6, label=f"LTL={_fmt_num(float(low_limit))}")
+    if high_limit is not None and np.isfinite(high_limit):
+        ax.axvline(float(high_limit), color="#D62728", linestyle="-", linewidth=1.6, label=f"UTL={_fmt_num(float(high_limit))}")
+    if proposed_l6 is not None and np.isfinite(proposed_l6):
+        ax.axvline(float(proposed_l6), color="#FF7F0E", linestyle="--", linewidth=1.2, label=f"LTL 6s={_fmt_1dp(float(proposed_l6))}")
+    if proposed_u6 is not None and np.isfinite(proposed_u6):
+        ax.axvline(float(proposed_u6), color="#FF7F0E", linestyle="--", linewidth=1.2, label=f"UTL 6s={_fmt_1dp(float(proposed_u6))}")
+    if proposed_l12 is not None and np.isfinite(proposed_l12):
+        ax.axvline(float(proposed_l12), color="#9467BD", linestyle=":", linewidth=1.2, label=f"LTL 12s={_fmt_1dp(float(proposed_l12))}")
+    if proposed_u12 is not None and np.isfinite(proposed_u12):
+        ax.axvline(float(proposed_u12), color="#9467BD", linestyle=":", linewidth=1.2, label=f"UTL 12s={_fmt_1dp(float(proposed_u12))}")
+
+    ax.grid(True, alpha=0.3)
+    if has_spec:
+        ax.set_title(title + f"\nFail chips: {n_fail}/{v.size}")
+    else:
+        ax.set_title(title + f"\nFail chips: N/A (no spec limits)")
+    ax.set_xlabel("Value")
+    ax.set_ylabel("CDF")
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, format="png")
+
+    if zoomed_out_path is not None:
+        zoom_limits = _resolve_main_distribution_zoom_limits(v)
+        if zoom_limits is not None:
+            ax.set_xlim(*zoom_limits)
+        zoomed_out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(zoomed_out_path, format="png")
+
+    plt.close(fig)
+
+
 def _cdf_plot_by_site_png(
     values,
     *,
@@ -728,6 +836,7 @@ def _cdf_plot_by_site_png(
     out_path: Path,
     low_limit: float | None = None,
     high_limit: float | None = None,
+    zoom_to_limits: bool = False,
 ) -> None:
     import numpy as np
     import pandas as pd
@@ -773,6 +882,13 @@ def _cdf_plot_by_site_png(
         ax.axvline(float(low_limit), color="#D62728", linestyle="-", linewidth=1.4, label=f"LTL={_fmt_num(float(low_limit))}")
     if high_limit is not None and math.isfinite(float(high_limit)):
         ax.axvline(float(high_limit), color="#D62728", linestyle="-", linewidth=1.4, label=f"UTL={_fmt_num(float(high_limit))}")
+
+    if zoom_to_limits:
+        zoom_limits = _resolve_main_distribution_zoom_limits_by_groups(
+            [group["v"].to_numpy(dtype=float) for _, group in df.groupby("SITE_NUM")]
+        )
+        if zoom_limits is not None:
+            ax.set_xlim(*zoom_limits)
 
     ax.grid(True, alpha=0.3)
     ax.set_title(title + "\nDistribution grouped by site")
@@ -854,6 +970,68 @@ def _build_wafer_grid(d):
     return x_unique, y_unique, grid, fail_mask, int(np.count_nonzero(fails))
 
 
+def _resolve_main_distribution_zoom_limits(values) -> tuple[float, float] | None:
+    import numpy as np
+
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None
+
+    if finite.size <= 8:
+        left = float(np.min(finite))
+        right = float(np.max(finite))
+    else:
+        q01, q25, q50, q75, q99 = np.nanpercentile(finite, [1, 25, 50, 75, 99])
+        iqr = float(q75 - q25)
+        if np.isfinite(iqr) and iqr > 0:
+            left = max(float(q01), float(q25 - 1.5 * iqr))
+            right = min(float(q99), float(q75 + 1.5 * iqr))
+        else:
+            mad = float(np.nanmedian(np.abs(finite - q50)))
+            if np.isfinite(mad) and mad > 0:
+                robust_sigma = 1.4826 * mad
+                left = max(float(q01), float(q50 - 6.0 * robust_sigma))
+                right = min(float(q99), float(q50 + 6.0 * robust_sigma))
+            else:
+                left = float(np.min(finite))
+                right = float(np.max(finite))
+
+    if not np.isfinite(left) or not np.isfinite(right):
+        left = float(np.min(finite))
+        right = float(np.max(finite))
+
+    span = right - left
+    if not np.isfinite(span) or span <= 0:
+        anchor = float(np.median(finite))
+        span = max(abs(anchor) * 0.1, 1.0)
+        left = anchor - span / 2.0
+        right = anchor + span / 2.0
+
+    pad = max(span * 0.06, 1e-9)
+    return left - pad, right + pad
+
+
+def _resolve_main_distribution_zoom_limits_by_groups(group_values: Iterable[Any]) -> tuple[float, float] | None:
+    limits: list[tuple[float, float]] = []
+    for values in group_values:
+        current = _resolve_main_distribution_zoom_limits(values)
+        if current is not None:
+            limits.append(current)
+
+    if not limits:
+        return None
+
+    left = min(item[0] for item in limits)
+    right = max(item[1] for item in limits)
+    if not math.isfinite(left) or not math.isfinite(right):
+        return None
+    if right <= left:
+        pad = max(abs(left) * 0.05, 1.0)
+        return left - pad, right + pad
+    return left, right
+
+
 def _build_wafer_map_title(
     title: str,
     *,
@@ -869,150 +1047,60 @@ def _build_wafer_map_title(
     return title + "\n" + f"LTL={ltl_txt}; UTL={utl_txt}; Unit={unit_txt}; median={median_txt}"
 
 
-def _wafer_map_html(
-    values,
+def _fmt_wafer_coordinate(value: float) -> str:
+    value_f = float(value)
+    if math.isfinite(value_f) and value_f.is_integer():
+        return str(int(value_f))
+    return _fmt_num(value_f)
+
+
+def _summarize_failing_chip_coordinates(
+    grouped,
     *,
-    meta_cols,
-    title: str,
-    out_path: Path,
-    low_limit: float | None = None,
-    high_limit: float | None = None,
-    unit: str | None = None,
-    median_v: float | None = None,
-) -> None:
-    """Create an interactive wafer map HTML using a heatmap/imshow-style raster."""
+    low_limit: float | None,
+    high_limit: float | None,
+    max_items: int = 10,
+    wrap_width: int = 34,
+) -> str | None:
     import numpy as np
+    import textwrap
 
-    df, wafers, vmin, vmax = _prepare_wafer_map_frame(values, meta_cols=meta_cols)
-    if df is None or wafers is None:
-        return
+    if grouped is None or grouped.empty or "FAIL" not in grouped.columns:
+        return None
 
-    try:
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-    except Exception:
-        return
+    failed = grouped[grouped["FAIL"].astype(bool)].copy()
+    if failed.empty:
+        return None
 
-    low = -np.inf if low_limit is None else float(low_limit)
-    high = np.inf if high_limit is None else float(high_limit)
-    wafermap_scale = 2.0
+    low = None
+    if low_limit is not None:
+        low_f = float(low_limit)
+        if math.isfinite(low_f):
+            low = low_f
 
-    n = len(wafers)
-    ncols = 3 if n >= 3 else n
-    nrows = int(math.ceil(n / max(1, ncols)))
-    subplot_titles: list[str] = []
-    wafer_frames: list[tuple[str, Any]] = []
-    for w in wafers:
-        d = df[df["WAFER"].astype(str) == str(w)].copy()
-        wafer_frames.append((str(w), d))
-        vv = d["v"].to_numpy(dtype=float)
-        fails = (vv < low) | (vv > high)
-        subplot_titles.append(f"WAFER={w}  N={len(vv)}  fails={int(np.count_nonzero(fails))}")
+    high = None
+    if high_limit is not None:
+        high_f = float(high_limit)
+        if math.isfinite(high_f):
+            high = high_f
 
-    fig = make_subplots(rows=nrows, cols=ncols, subplot_titles=subplot_titles)
-    showscale_remaining = True
+    severity = np.zeros(len(failed), dtype=float)
+    fail_values = failed["v"].to_numpy(dtype=float)
+    if low is not None:
+        severity = np.maximum(severity, low - fail_values)
+    if high is not None:
+        severity = np.maximum(severity, fail_values - high)
+    failed["FAIL_SEVERITY"] = severity
+    failed = failed.sort_values(["FAIL_SEVERITY", "Y", "X"], ascending=[False, True, True])
 
-    for idx, (w, d) in enumerate(wafer_frames, start=1):
-        row = (idx - 1) // ncols + 1
-        col = (idx - 1) % ncols + 1
-        d["FAIL"] = (d["v"].to_numpy(dtype=float) < low) | (d["v"].to_numpy(dtype=float) > high)
-        x_unique, y_unique, grid, fail_mask, n_fail = _build_wafer_grid(d)
-
-        x_min = float(x_unique.min())
-        x_max = float(x_unique.max())
-        y_min = float(y_unique.min())
-        y_max = float(y_unique.max())
-        if x_min == x_max:
-            x_min -= 0.5
-            x_max += 0.5
-        if y_min == y_max:
-            y_min -= 0.5
-            y_max += 0.5
-
-        customdata = np.empty((len(y_unique), len(x_unique), 5), dtype=object)
-        customdata[:, :, 0] = w
-        customdata[:, :, 1] = np.broadcast_to(x_unique.reshape(1, -1), (len(y_unique), len(x_unique)))
-        customdata[:, :, 2] = np.broadcast_to(y_unique.reshape(-1, 1), (len(y_unique), len(x_unique)))
-        customdata[:, :, 3] = np.where(np.isfinite(grid), np.vectorize(_fmt_num)(grid), "N/A")
-        customdata[:, :, 4] = np.where(fail_mask, "FAIL", np.where(np.isfinite(grid), "PASS", "NO DATA"))
-
-        fig.add_trace(
-            go.Heatmap(
-                x=x_unique,
-                y=y_unique,
-                z=grid,
-                customdata=customdata,
-                hovertemplate=(
-                    "Wafer=%{customdata[0]}<br>"
-                    "X=%{customdata[1]}<br>"
-                    "Y=%{customdata[2]}<br>"
-                    "Value=%{customdata[3]}<br>"
-                    "Status=%{customdata[4]}<extra></extra>"
-                ),
-                showlegend=False,
-                colorscale="Turbo",
-                zmin=vmin,
-                zmax=vmax,
-                xgap=max(1, int(wafermap_scale)),
-                ygap=max(1, int(wafermap_scale)),
-                colorbar={"title": "Value"},
-                showscale=showscale_remaining,
-            ),
-            row=row,
-            col=col,
-        )
-        showscale_remaining = False
-
-        fail_y_idx, fail_x_idx = np.where(fail_mask)
-        if fail_y_idx.size > 0:
-            fig.add_trace(
-                go.Scatter(
-                    x=x_unique[fail_x_idx],
-                    y=y_unique[fail_y_idx],
-                    mode="markers",
-                    hoverinfo="skip",
-                    showlegend=False,
-                    marker={
-                        "symbol": "square-open",
-                        "size": 16.0 * wafermap_scale,
-                        "color": "#D62728",
-                        "line": {"color": "#D62728", "width": 2.0 * wafermap_scale},
-                    },
-                ),
-                row=row,
-                col=col,
-            )
-
-        fig.update_xaxes(range=[x_min, x_max], showgrid=True, gridcolor="rgba(0,0,0,0.12)", row=row, col=col)
-        fig.update_yaxes(
-            range=[y_min, y_max],
-            showgrid=True,
-            gridcolor="rgba(0,0,0,0.12)",
-            row=row,
-            col=col,
-        )
-
-    fig.update_layout(
-        title={
-            "text": _build_wafer_map_title(
-                title,
-                low_limit=low_limit,
-                high_limit=high_limit,
-                unit=unit,
-                median_v=median_v,
-            ),
-            "x": 0.5,
-        },
-        template="plotly_white",
-        dragmode="zoom",
-        hovermode="closest",
-        width=max(1200, 480 * ncols) * wafermap_scale,
-        height=max(700, 420 * nrows) * wafermap_scale,
-        margin={"l": 40, "r": 40, "t": 90, "b": 40},
-        font={"size": 12 * wafermap_scale},
-    )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.write_html(out_path, include_plotlyjs=True, full_html=True, auto_open=False)
+    total_fail = int(failed.shape[0])
+    selected = failed.head(max_items)
+    coords = [
+        f"({_fmt_wafer_coordinate(x_val)},{_fmt_wafer_coordinate(y_val)})"
+        for x_val, y_val in zip(selected["X"], selected["Y"], strict=False)
+    ]
+    prefix = f"Fail coords ({len(coords)}/{total_fail}): " if total_fail > len(coords) else f"Fail coords ({total_fail}): "
+    return textwrap.fill(prefix + ", ".join(coords), width=wrap_width, subsequent_indent="  ")
 
 
 def _wafer_map_png(
@@ -1026,7 +1114,7 @@ def _wafer_map_png(
     unit: str | None = None,
     median_v: float | None = None,
 ) -> None:
-    """Create a wafer map image plot using imshow with aspect='auto'."""
+    """Create a PNG wafer map with compact failing-chip coordinate annotations."""
     import numpy as np
 
     try:
@@ -1054,6 +1142,42 @@ def _wafer_map_png(
     n = len(wafers)
     ncols = 3 if n >= 3 else n
     nrows = int(math.ceil(n / max(1, ncols)))
+
+    low = -np.inf if low_limit is None else float(low_limit)
+    high = np.inf if high_limit is None else float(high_limit)
+
+    wafer_panels: list[dict[str, Any] | None] = []
+    max_annotation_lines = 0
+    for w in wafers:
+        d = df[df["WAFER"].astype(str) == str(w)].copy()
+        if d.empty:
+            wafer_panels.append(None)
+            continue
+
+        d["FAIL"] = (d["v"].to_numpy(dtype=float) < low) | (d["v"].to_numpy(dtype=float) > high)
+        grouped = d.groupby(["Y", "X"], as_index=False).agg(v=("v", "median"), FAIL=("FAIL", "max"))
+        x_unique, y_unique, grid, fail_mask, n_fail = _build_wafer_grid(d)
+        fail_summary = _summarize_failing_chip_coordinates(
+            grouped,
+            low_limit=low_limit,
+            high_limit=high_limit,
+        )
+        if fail_summary:
+            max_annotation_lines = max(max_annotation_lines, fail_summary.count("\n") + 1)
+
+        wafer_panels.append(
+            {
+                "wafer": str(w),
+                "x_unique": x_unique,
+                "y_unique": y_unique,
+                "grid": grid,
+                "fail_mask": fail_mask,
+                "n_fail": n_fail,
+                "n_points": len(grouped),
+                "fail_summary": fail_summary,
+            }
+        )
+
     fig_w = (10.0 if n <= 2 else 12.5) * wafermap_scale
     fig_h = (6.8 if n <= 2 else max(7.0, 4.8 * nrows)) * wafermap_scale
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=140)
@@ -1062,38 +1186,22 @@ def _wafer_map_png(
     axes = axes.ravel()
 
     # Reserve a right margin for the colorbar so it never covers the wafer maps.
-    fig.subplots_adjust(left=0.06, right=0.86, bottom=0.08, top=0.90, wspace=0.18, hspace=0.28)
-
-    low = -np.inf if low_limit is None else float(low_limit)
-    high = np.inf if high_limit is None else float(high_limit)
+    annotation_space = min(0.18, 0.04 * max_annotation_lines)
+    bottom_margin = 0.10 + (annotation_space * (0.90 if nrows == 1 else 0.55))
+    hspace = 0.32 + (annotation_space * (3.8 if nrows > 1 else 1.8))
+    fig.subplots_adjust(left=0.06, right=0.86, bottom=bottom_margin, top=0.90, wspace=0.18, hspace=hspace)
 
     mappable = None
-    for ax, w in zip(axes, wafers, strict=False):
-        d = df[df["WAFER"].astype(str) == str(w)].copy()
-        if d.empty:
+    for ax, panel in zip(axes, wafer_panels, strict=False):
+        if panel is None:
             ax.axis("off")
             continue
 
-        d["FAIL"] = (d["v"].to_numpy(dtype=float) < low) | (d["v"].to_numpy(dtype=float) > high)
-        grouped = d.groupby(["Y", "X"], as_index=False).agg(v=("v", "median"), FAIL=("FAIL", "max"))
-
-        xv = grouped["X"].to_numpy(dtype=float)
-        yv = grouped["Y"].to_numpy(dtype=float)
-        vv = grouped["v"].to_numpy(dtype=float)
-        fails = grouped["FAIL"].to_numpy(dtype=bool)
-        n_fail = int(np.count_nonzero(fails))
-
-        x_unique = np.sort(np.unique(xv))
-        y_unique = np.sort(np.unique(yv))
-        x_index = {float(x): idx for idx, x in enumerate(x_unique)}
-        y_index = {float(y): idx for idx, y in enumerate(y_unique)}
-        grid = np.full((len(y_unique), len(x_unique)), np.nan, dtype=float)
-        fail_mask = np.zeros((len(y_unique), len(x_unique)), dtype=bool)
-        for x_val, y_val, v_val, fail_val in zip(xv, yv, vv, fails, strict=False):
-            xi = x_index[float(x_val)]
-            yi = y_index[float(y_val)]
-            grid[yi, xi] = float(v_val)
-            fail_mask[yi, xi] = bool(fail_val)
+        x_unique = panel["x_unique"]
+        y_unique = panel["y_unique"]
+        grid = panel["grid"]
+        fail_mask = panel["fail_mask"]
+        n_fail = panel["n_fail"]
 
         x_min = float(x_unique.min())
         x_max = float(x_unique.max())
@@ -1146,10 +1254,32 @@ def _wafer_map_png(
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
 
-        ax.set_title(f"WAFER={w}  N={len(vv)}  fails={n_fail}", fontsize=10 * wafermap_scale)
+        ax.set_title(f"WAFER={panel['wafer']}  N={panel['n_points']}  fails={n_fail}", fontsize=10 * wafermap_scale)
         ax.set_aspect("auto")
         ax.grid(True, alpha=0.12)
         ax.tick_params(labelsize=9 * wafermap_scale)
+        ax.set_xlabel("X", fontsize=9 * wafermap_scale)
+        ax.set_ylabel("Y", fontsize=9 * wafermap_scale)
+
+        fail_summary = panel["fail_summary"]
+        if fail_summary:
+            ax.text(
+                0.01,
+                -0.16,
+                fail_summary,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7.2 * wafermap_scale,
+                linespacing=1.2,
+                clip_on=False,
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "facecolor": "white",
+                    "edgecolor": "#D62728",
+                    "alpha": 0.88,
+                },
+            )
 
     # Hide any unused axes.
     for ax in axes[len(wafers) :]:
@@ -1226,7 +1356,9 @@ METRIC_CPK_LOW = "cpk_low"
 METRIC_CPK_HIGH = "cpk_high"
 METRIC_SITE_DELTA = "site_to_site_delta"
 METRIC_UNIQUE_VALUES = "unique_value_count"
+METRIC_SKEWNESS = "skewness"
 METRIC_MULTIMODALITY = "multimodality"
+SKEWNESS_ABS_THRESHOLD = 1.0
 
 METRIC_DISPLAY_ORDER: tuple[str, ...] = (
     METRIC_YIELD,
@@ -1234,6 +1366,7 @@ METRIC_DISPLAY_ORDER: tuple[str, ...] = (
     METRIC_CPK_HIGH,
     METRIC_SITE_DELTA,
     METRIC_UNIQUE_VALUES,
+    METRIC_SKEWNESS,
     METRIC_MULTIMODALITY,
 )
 
@@ -1243,6 +1376,7 @@ METRIC_PRIORITY: dict[str, str] = {
     METRIC_CPK_HIGH: "MEDIUM",
     METRIC_SITE_DELTA: "MEDIUM",
     METRIC_UNIQUE_VALUES: "LOW",
+    METRIC_SKEWNESS: "LOW",
     METRIC_MULTIMODALITY: "MEDIUM",
 }
 
@@ -1290,6 +1424,7 @@ class TestMetricAssessment:
     site_delta_sigma: float | None
     worst_site: str | None
     unique_value_count: int | None
+    skewness: float | None
     is_analog_unit: bool
     peak_count: int
     multimodality_reason: str | None
@@ -1319,6 +1454,8 @@ def _metric_label(
         return "Site-to-Site Delta"
     if metric_key == METRIC_UNIQUE_VALUES:
         return "Unique Values"
+    if metric_key == METRIC_SKEWNESS:
+        return "Skewness"
     if metric_key == METRIC_MULTIMODALITY:
         return "Multimodality"
     return metric_key
@@ -1401,35 +1538,62 @@ def _site_delta_sigma(values, *, meta_cols) -> tuple[float | None, str | None]:
         return None, None
     df_site = df_site[df_site["SITE_NUM"].isin(eligible_sites)].copy()
 
-    sigma_candidates: list[float] = []
-    robust_sigma = _robust_sigma(df_site["v"].to_numpy(dtype=float))
-    if np.isfinite(robust_sigma) and robust_sigma > 0.0:
-        sigma_candidates.append(float(robust_sigma))
-
-    within_site_sigma_values: list[float] = []
-    for _, group in df_site.groupby("SITE_NUM"):
-        if group.shape[0] < 2:
+    site_stats_rows: list[dict[str, float]] = []
+    for site_num, group in df_site.groupby("SITE_NUM"):
+        site_values = group["v"].to_numpy(dtype=float)
+        if site_values.size == 0:
             continue
-        std = float(group["v"].std(ddof=1))
-        if np.isfinite(std) and std > 0.0:
-            within_site_sigma_values.append(std)
-    if within_site_sigma_values:
-        pooled_within = float(np.sqrt(np.mean(np.square(within_site_sigma_values))))
-        if np.isfinite(pooled_within) and pooled_within > 0.0:
-            sigma_candidates.append(pooled_within)
-
-    sigma = max(sigma_candidates) if sigma_candidates else float(df_site["v"].std(ddof=1))
-    if not np.isfinite(sigma) or sigma <= 0.0:
+        site_stats_rows.append(
+            {
+                "SITE_NUM": float(site_num),
+                "n": float(site_values.size),
+                "center": float(np.median(site_values)),
+                "mean": float(np.mean(site_values)),
+                "sigma": float(_robust_sigma(site_values)),
+            }
+        )
+    if len(site_stats_rows) < MIN_SITES_FOR_SITE_DELTA:
         return None, None
 
-    global_mean = float(df_site["v"].mean())
-    mean_by_site = df_site.groupby("SITE_NUM")["v"].mean().sort_index()
-    deviations = ((mean_by_site - global_mean).abs() / sigma).dropna()
-    if deviations.empty:
+    site_stats = pd.DataFrame(site_stats_rows).sort_values("SITE_NUM").reset_index(drop=True)
+    center_by_site = site_stats["center"].to_numpy(dtype=float)
+
+    # Estimate site-to-site sensitivity against within-site residual spread rather than the
+    # global spread, which can be inflated by the very site shifts we want to detect.
+    site_center_series = df_site.groupby("SITE_NUM")["v"].transform("median")
+    residuals = (df_site["v"] - site_center_series).to_numpy(dtype=float)
+    sigma_candidates: list[float] = []
+    residual_sigma = _robust_sigma(residuals)
+    if np.isfinite(residual_sigma) and residual_sigma > 0.0:
+        sigma_candidates.append(float(residual_sigma))
+
+    site_sigmas = site_stats["sigma"].to_numpy(dtype=float)
+    positive_site_sigmas = site_sigmas[np.isfinite(site_sigmas) & (site_sigmas > 0.0)]
+    if positive_site_sigmas.size > 0:
+        sigma_candidates.append(float(np.median(positive_site_sigmas)))
+        sigma_candidates.append(float(np.sqrt(np.mean(np.square(positive_site_sigmas)))))
+
+    sigma = min(sigma_candidates) if sigma_candidates else float(np.nanstd(residuals, ddof=1))
+
+    global_center = float(np.median(df_site["v"].to_numpy(dtype=float)))
+    deviations = np.abs(center_by_site - global_center)
+    pairwise_delta = 0.0
+    if center_by_site.size >= 2:
+        pairwise_delta = float(np.nanmax(np.abs(center_by_site.reshape(-1, 1) - center_by_site.reshape(1, -1))))
+
+    if np.isfinite(sigma) and sigma > 0.0:
+        site_delta_sigma = max(float(np.nanmax(deviations) / sigma), float(pairwise_delta / (2.0 * sigma)))
+    elif np.nanmax(deviations) > 0.0 or pairwise_delta > 0.0:
+        site_delta_sigma = 99.0
+    else:
         return None, None
 
-    worst_site = deviations.idxmax()
-    return float(deviations.max()), _format_site_identifier(worst_site)
+    deviation_series = pd.Series(deviations, index=site_stats["SITE_NUM"].tolist()).dropna()
+    if deviation_series.empty:
+        return None, None
+
+    worst_site = deviation_series.idxmax()
+    return float(site_delta_sigma), _format_site_identifier(worst_site)
 
 
 def _unique_value_count(values, *, unit: str | None) -> tuple[int | None, bool]:
@@ -1461,6 +1625,30 @@ def _unique_value_count(values, *, unit: str | None) -> tuple[int | None, bool]:
     if regular_quantization and unique_count >= 5:
         return None, True
     return unique_count, True
+
+
+def _skewness_value(values, *, is_analog: bool) -> float | None:
+    import numpy as np
+
+    if not is_analog:
+        return None
+
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size < MIN_SAMPLES_FOR_UNIQUE_VALUE_CHECK:
+        return None
+
+    mean = float(np.mean(finite))
+    centered = finite - mean
+    m2 = float(np.mean(centered**2))
+    if not np.isfinite(m2) or m2 <= 0.0:
+        return 0.0
+
+    m3 = float(np.mean(centered**3))
+    skew = m3 / (m2 ** 1.5)
+    if not np.isfinite(skew):
+        return None
+    return float(skew)
 
 
 def _classify_wafer_process_signature(values, *, meta_cols) -> str | None:
@@ -1532,11 +1720,8 @@ def _detect_coordinate_signature(values, *, meta_cols) -> str | None:
     return None
 
 
-def _should_generate_interactive_wafer_map(values, *, meta_cols) -> bool:
-    return (
-        _classify_wafer_process_signature(values, meta_cols=meta_cols) is not None
-        or _detect_coordinate_signature(values, meta_cols=meta_cols) is not None
-    )
+def _is_go_nogo_test(*, unit: str | None, unique_value_count: int | None) -> bool:
+    return _is_analog_unit(unit) and unique_value_count is not None and unique_value_count <= 2
 
 
 def _infer_multimodality_reason(
@@ -1619,9 +1804,14 @@ def _assess_test_metrics(
     if is_analog and unique_values is not None and unique_values < 10:
         metric_keys.append(METRIC_UNIQUE_VALUES)
 
-    peak_count = _count_hist_peaks(finite) if finite.size else 0
+    skewness = _skewness_value(finite, is_analog=is_analog)
+    if skewness is not None and abs(skewness) >= SKEWNESS_ABS_THRESHOLD:
+        metric_keys.append(METRIC_SKEWNESS)
+
+    multimodality_eligible = is_analog and not _is_go_nogo_test(unit=unit, unique_value_count=unique_values)
+    peak_count = _count_hist_peaks(finite) if finite.size and multimodality_eligible else 1
     multimodality_reason = None
-    if peak_count >= 2:
+    if multimodality_eligible and peak_count >= 2:
         metric_keys.append(METRIC_MULTIMODALITY)
         multimodality_reason = _infer_multimodality_reason(
             numeric,
@@ -1644,6 +1834,7 @@ def _assess_test_metrics(
         site_delta_sigma=site_delta,
         worst_site=worst_site,
         unique_value_count=unique_values,
+        skewness=skewness,
         is_analog_unit=is_analog,
         peak_count=peak_count,
         multimodality_reason=multimodality_reason,
@@ -1756,6 +1947,9 @@ def _build_comment(
         if metric_assessment.unique_value_count < 10:
             parts.append(f"Analog unique values low ({metric_assessment.unique_value_count})")
 
+    if metric_assessment.skewness is not None and abs(metric_assessment.skewness) >= SKEWNESS_ABS_THRESHOLD:
+        parts.append(f"Skewness high ({metric_assessment.skewness:.2f})")
+
     # Multi-modality heuristic.
     if metric_assessment.peak_count >= 2:
         parts.append(f"Possible multi-modal distribution (peaks≈{metric_assessment.peak_count})")
@@ -1813,17 +2007,14 @@ def _read_unit_data(
 ) -> Any:
     import pandas as pd
 
-    # Keep header (line 0), skip meta rows 1..data_start_line_index-1.
-    def _skip(i: int) -> bool:
-        return 0 < i < data_start_line_index
-
     df = pd.read_csv(
         file_path,
         sep=DELIMITER,
         encoding=encoding,
         low_memory=False,
         usecols=usecols,
-        skiprows=_skip,
+        skiprows=range(1, data_start_line_index),
+        memory_map=True,
     )
     df.columns = [c.strip() for c in df.columns]
     return df
@@ -1864,6 +2055,7 @@ def _status_for_test(
     cpk_high: float,
     site_to_site_delta: bool = False,
     unique_value_count_low: bool = False,
+    skewness: bool = False,
     multimodality: bool = False,
 ) -> str | None:
     metric_keys: list[str] = []
@@ -1877,6 +2069,8 @@ def _status_for_test(
         metric_keys.append(METRIC_SITE_DELTA)
     if unique_value_count_low:
         metric_keys.append(METRIC_UNIQUE_VALUES)
+    if skewness:
+        metric_keys.append(METRIC_SKEWNESS)
     if multimodality:
         metric_keys.append(METRIC_MULTIMODALITY)
     return _status_text_from_metric_keys(
@@ -1974,6 +2168,7 @@ def _add_overview_sheet(
         ("Cpk>20 count", int(metric_counts.get(METRIC_CPK_HIGH, 0))),
         ("Site-to-Site Delta count", int(metric_counts.get(METRIC_SITE_DELTA, 0))),
         ("Unique Values count", int(metric_counts.get(METRIC_UNIQUE_VALUES, 0))),
+        ("Skewness count", int(metric_counts.get(METRIC_SKEWNESS, 0))),
         ("Multimodality count", int(metric_counts.get(METRIC_MULTIMODALITY, 0))),
     ]
     for row_idx, (label, value) in enumerate(summary_rows, start=3):
@@ -1995,22 +2190,27 @@ def _add_overview_sheet(
         configured_modules.append(normalized)
         seen_modules.add(normalized)
 
-    module_summary: dict[str, dict[str, int]] = {
-        module_name: {
-            **{metric_key: 0 for metric_key in METRIC_DISPLAY_ORDER},
-        }
-        for module_name in configured_modules
-    }
-    for entry in summary_entries:
-        module_name = str(entry.get("module") or "").strip().upper()
-        if not module_name:
-            continue
-        item = module_summary.setdefault(
-            module_name,
-            {
+    module_summary: dict[tuple[str, str], dict[str, int]] = {}
+    module_summary_keys: list[tuple[str, str]] = []
+    for file_name in sorted(processed_files):
+        for module_name in configured_modules:
+            key = (file_name, module_name)
+            module_summary[key] = {
                 **{metric_key: 0 for metric_key in METRIC_DISPLAY_ORDER},
-            },
-        )
+            }
+            module_summary_keys.append(key)
+    for entry in summary_entries:
+        file_name = str(entry.get("file_name") or "").strip()
+        module_name = str(entry.get("module") or "").strip().upper()
+        if not file_name or not module_name:
+            continue
+        key = (file_name, module_name)
+        if key not in module_summary:
+            module_summary[key] = {
+                **{metric_key: 0 for metric_key in METRIC_DISPLAY_ORDER},
+            }
+            module_summary_keys.append(key)
+        item = module_summary[key]
         for metric_key in entry.get("metric_keys", []):
             item[metric_key] += 1
 
@@ -2019,6 +2219,7 @@ def _add_overview_sheet(
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
     traffic_headers = [
+        "File",
         "Module",
         "Overall",
         "Fails",
@@ -2026,6 +2227,7 @@ def _add_overview_sheet(
         "Cpk>20",
         "Site-to-Site Delta",
         "Unique Values",
+        "Skewness",
         "Multimodality",
     ]
     for col_idx, header in enumerate(traffic_headers, start=1):
@@ -2034,8 +2236,8 @@ def _add_overview_sheet(
     module_metric_header_row = row_cursor
     row_cursor += 1
 
-    for module_name in configured_modules:
-        item = module_summary[module_name]
+    for file_name, module_name in module_summary_keys:
+        item = module_summary[(file_name, module_name)]
         module_metric_keys = [metric_key for metric_key in METRIC_DISPLAY_ORDER if item.get(metric_key, 0) > 0]
         overall = _status_text_from_metric_keys(
             module_metric_keys,
@@ -2044,19 +2246,19 @@ def _add_overview_sheet(
             cpk_high=20.0,
         ) or "OK"
         overall_priority = _priority_from_metric_keys(module_metric_keys)
-
-        ws.cell(row=row_cursor, column=1, value=module_name)
-        status_cell = ws.cell(row=row_cursor, column=2, value=overall)
+        ws.cell(row=row_cursor, column=1, value=file_name)
+        ws.cell(row=row_cursor, column=2, value=module_name)
+        status_cell = ws.cell(row=row_cursor, column=3, value=overall)
         status_cell.font = Font(bold=True)
         status_cell.fill = priority_fills[overall_priority]
-        for metric_offset, metric_key in enumerate(METRIC_DISPLAY_ORDER, start=3):
+        for metric_offset, metric_key in enumerate(METRIC_DISPLAY_ORDER, start=4):
             ws.cell(row=row_cursor, column=metric_offset, value=item[metric_key])
         row_cursor += 1
 
     module_metric_start_row = module_metric_header_row + 1
     module_metric_end_row = row_cursor - 1
     if module_metric_end_row >= module_metric_start_row:
-        for col_idx in range(3, 9):
+        for col_idx in range(4, 12):
             col_letter = _excel_col_letter(col_idx)
             ws.conditional_formatting.add(
                 f"{col_letter}{module_metric_start_row}:{col_letter}{module_metric_end_row}",
@@ -2206,13 +2408,15 @@ def generate_yield_cpk_report(
 
         affected: list[str] = []
         assessment_by_col: dict[str, TestMetricAssessment] = {}
+        numeric_series_by_col: dict[str, Any] = {}
         for test_col in interest_cols:
+            numeric_series = pd.to_numeric(df_units[test_col], errors="coerce")
             y, c = _yield_cpk_from_meta(meta, test_col)
             yield_by_col[test_col] = y
             cpk_by_col[test_col] = c
             _, _, unit = _limits_from_meta(meta, test_col)
             assessment = _assess_test_metrics(
-                series=df_units[test_col],
+                series=numeric_series,
                 meta_cols=meta_cols_df,
                 unit=unit,
                 yield_pct=y,
@@ -2225,6 +2429,7 @@ def generate_yield_cpk_report(
             assessment_by_col[test_col] = assessment
             if assessment.status_text:
                 affected.append(test_col)
+                numeric_series_by_col[test_col] = numeric_series
 
         affected.sort(key=lambda c: (interest_modules.get(c, ""), int(c)))
 
@@ -2248,25 +2453,27 @@ def generate_yield_cpk_report(
             "Test Nr",
             "Test Name",
             "Unit",
+            "CDF Plot",
             "Yield (%)",
-            "Fail Chips",
             "Cpk",
+            "Fail Chips",
             "Fails",
             "Cpk<1.67",
             "Cpk>20",
             "Site-to-Site Delta",
             "Multimodality",
             "Unique Values",
+            "Skewness",
             "N",
             "Outliers",
-            "Comment",
-            "CDF Plot",
+            "Findings",
             "Original LTL",
             "Original UTL",
             "LTL 6s",
             "UTL 6s",
             "LTL 12s",
             "UTL 12s",
+            "TE notes",
         ]
         ws.append(headers)
         metric_header_fill = PatternFill(patternType="solid", fgColor="FFFF00")
@@ -2280,6 +2487,7 @@ def generate_yield_cpk_report(
             "Site-to-Site Delta",
             "Multimodality",
             "Unique Values",
+            "Skewness",
         }
         for col_idx, header in enumerate(headers, start=1):
             if header in metric_header_names:
@@ -2291,15 +2499,16 @@ def generate_yield_cpk_report(
         ws_plots.append([
             "Test",
             "CDF (fails highlighted)",
-            "Wafer map (interactive HTML)",
+            "CDF zoomed",
+            "CDF by Site zoomed",
             "Wafer map (static PNG)",
-            "CDF by Site",
         ])
         ws_plots["A1"].font = Font(bold=True)
         ws_plots["B1"].font = Font(bold=True)
         ws_plots["C1"].font = Font(bold=True)
         ws_plots["D1"].font = Font(bold=True)
         ws_plots["E1"].font = Font(bold=True)
+        ws_plots.sheet_view.zoomScale = 85
 
         plot_anchor_row = 3
         out_rows = 0
@@ -2320,8 +2529,7 @@ def generate_yield_cpk_report(
             status = assessment.status_text or ""
             metric_key_set = set(assessment.metric_keys)
 
-            series = df_units[test_col]
-            numeric = pd.to_numeric(series, errors="coerce")
+            numeric = numeric_series_by_col[test_col]
             finite = numeric.dropna().to_numpy(dtype=float)
             finite = finite[np.isfinite(finite)]
             n = int(finite.size)
@@ -2356,6 +2564,7 @@ def generate_yield_cpk_report(
             # Plot file and embed in plot sheet.
             safe_test = re.sub(r"[^A-Za-z0-9._-]+", "_", test_name)[:80] or test_col
             plot_path = plots_root / file_path.stem / f"{test_col}_{safe_test}.png"
+            plot_zoomed_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_zoomed.png"
             include_sigma_limits = (
                 METRIC_CPK_LOW in assessment.metric_keys or METRIC_CPK_HIGH in assessment.metric_keys
             )
@@ -2367,10 +2576,11 @@ def generate_yield_cpk_report(
                 mean_v=float(np.mean(finite)),
                 median_v=float(np.median(finite)),
             )
-            _cdf_plot_png(
-                numeric,
+            _cdf_plot_png_pair(
+                finite,
                 title=title,
                 out_path=plot_path,
+                zoomed_out_path=plot_zoomed_path,
                 low_limit=low,
                 high_limit=high,
                 proposed_l6=(l6 if include_sigma_limits else None),
@@ -2392,23 +2602,7 @@ def generate_yield_cpk_report(
                     unit=unit,
                     median_v=float(np.median(finite)),
                 )
-            wafer_map_html_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.html"
-            generate_interactive_wafer_map = wafer_maps_supported and _should_generate_interactive_wafer_map(
-                numeric,
-                meta_cols=meta_cols_df,
-            )
-            if generate_interactive_wafer_map:
-                _wafer_map_html(
-                    numeric,
-                    meta_cols=meta_cols_df,
-                    title=f"{test_name} ({test_col}) | {temp_label}",
-                    out_path=wafer_map_html_path,
-                    low_limit=low,
-                    high_limit=high,
-                    unit=unit,
-                    median_v=float(np.median(finite)),
-                )
-            site_cdf_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_cdf_by_site.png"
+            site_cdf_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_cdf_by_site_zoomed.png"
             if METRIC_SITE_DELTA in metric_key_set:
                 _cdf_plot_by_site_png(
                     numeric,
@@ -2417,6 +2611,7 @@ def generate_yield_cpk_report(
                     out_path=site_cdf_path,
                     low_limit=low,
                     high_limit=high,
+                    zoom_to_limits=True,
                 )
 
             # Write to plots sheet.
@@ -2432,27 +2627,17 @@ def generate_yield_cpk_report(
                 cdf_link.font = Font(color="0000EE", underline="single")
                 plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(plot_uri)
 
-            wafer_link = ws_plots[f"C{plot_anchor_row}"]
-            if not wafer_maps_supported:
-                wafer_link.value = "Not applicable"
-            else:
-                wafer_link.value = "Open interactive wafer map" if wafer_map_html_path.exists() else "Not generated"
-            wafer_uri = None
-            if wafer_map_html_path.exists():
-                wafer_uri = wafer_map_html_path.resolve().as_uri()
-                wafer_link.hyperlink = wafer_uri
-                wafer_link.font = Font(color="0000EE", underline="single")
+            cdf_zoomed_link = ws_plots[f"C{plot_anchor_row}"]
+            cdf_zoomed_link.value = "Open zoomed CDF PNG"
+            plot_zoomed_uri = None
+            if plot_zoomed_path.exists():
+                plot_zoomed_uri = plot_zoomed_path.resolve().as_uri()
+                cdf_zoomed_link.hyperlink = plot_zoomed_uri
+                cdf_zoomed_link.font = Font(color="0000EE", underline="single")
+                plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(plot_zoomed_uri)
 
-            wafer_png_link = ws_plots[f"D{plot_anchor_row}"]
-            wafer_png_link.value = "Not applicable" if not wafer_maps_supported else "Open wafer PNG"
-            wafer_png_uri = None
-            if wafer_map_path.exists():
-                wafer_png_uri = wafer_map_path.resolve().as_uri()
-                wafer_png_link.hyperlink = wafer_png_uri
-                wafer_png_link.font = Font(color="0000EE", underline="single")
-
-            site_cdf_link = ws_plots[f"E{plot_anchor_row}"]
-            site_cdf_link.value = "Open site CDF PNG" if site_cdf_path.exists() else "Not generated"
+            site_cdf_link = ws_plots[f"D{plot_anchor_row}"]
+            site_cdf_link.value = "Open site CDF zoomed PNG" if site_cdf_path.exists() else "Not generated"
             if site_cdf_path.exists():
                 site_cdf_uri = site_cdf_path.resolve().as_uri()
                 site_cdf_link.hyperlink = site_cdf_uri
@@ -2460,33 +2645,53 @@ def generate_yield_cpk_report(
             else:
                 site_cdf_uri = None
 
-            cdf_anchor_cell = f"B{plot_anchor_row + 1}"
-            wafer_anchor_cell = f"K{plot_anchor_row + 1}"
-            site_cdf_anchor_cell = f"T{plot_anchor_row + 1}"
+            wafer_png_link = ws_plots[f"E{plot_anchor_row}"]
+            wafer_png_link.value = "Not applicable" if not wafer_maps_supported else "Open wafer PNG"
+            wafer_png_uri = None
+            if wafer_map_path.exists():
+                wafer_png_uri = wafer_map_path.resolve().as_uri()
+                wafer_png_link.hyperlink = wafer_png_uri
+                wafer_png_link.font = Font(color="0000EE", underline="single")
+
+            image_width = 480
+            image_height = 330
+            image_row_span = 19
+            plot_block_height_rows = 40
+
+            top_image_row = plot_anchor_row + 1
+            bottom_image_row = top_image_row + image_row_span
+            cdf_anchor_cell = f"B{top_image_row}"
+            cdf_zoomed_anchor_cell = f"K{top_image_row}"
+            site_cdf_anchor_cell = f"B{bottom_image_row}"
+            wafer_anchor_cell = f"K{bottom_image_row}"
             if plot_path.exists():
                 img = XLImage(str(plot_path))
-                img.width = 520
-                img.height = 360
+                img.width = image_width
+                img.height = image_height
                 ws_plots.add_image(img, cdf_anchor_cell)
+            if plot_zoomed_path.exists():
+                zimg = XLImage(str(plot_zoomed_path))
+                zimg.width = image_width
+                zimg.height = image_height
+                ws_plots.add_image(zimg, cdf_zoomed_anchor_cell)
 
             if wafer_map_path.exists():
                 wimg = XLImage(str(wafer_map_path))
-                wimg.width = 520
-                wimg.height = 360
+                wimg.width = image_width
+                wimg.height = image_height
                 ws_plots.add_image(wimg, wafer_anchor_cell)
-                wafer_image_uri = wafer_uri or wafer_png_uri
-                if wafer_image_uri is not None:
-                    plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_image_uri)
+                if wafer_png_uri is not None:
+                    plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(wafer_png_uri)
             if site_cdf_path.exists():
                 simg = XLImage(str(site_cdf_path))
-                simg.width = 520
-                simg.height = 360
+                simg.width = image_width
+                simg.height = image_height
                 ws_plots.add_image(simg, site_cdf_anchor_cell)
                 if site_cdf_uri is not None:
                     plot_image_targets_by_sheet.setdefault(ws_plots.title, []).append(site_cdf_uri)
             # Reserve some rows for the image.
             plot_link_target = f"#{_excel_internal_sheet_ref(ws_plots.title)}!{cdf_anchor_cell}"
-            plot_anchor_row += 30
+            plot_anchor_row += plot_block_height_rows
 
             # Write row to data sheet.
             row = [
@@ -2494,30 +2699,35 @@ def generate_yield_cpk_report(
                 int(test_col),
                 test_name,
                 unit,
+                "View",
                 y,
-                n_fail,
                 c,
+                n_fail,
                 "YES" if METRIC_YIELD in metric_key_set else "NO",
                 "YES" if METRIC_CPK_LOW in metric_key_set else "NO",
                 "YES" if METRIC_CPK_HIGH in metric_key_set else "NO",
                 "YES" if METRIC_SITE_DELTA in metric_key_set else "NO",
                 max(int(assessment.peak_count or 0), 1),
                 "NO" if METRIC_UNIQUE_VALUES in metric_key_set else "YES",
+                "YES" if METRIC_SKEWNESS in metric_key_set else "NO",
                 n,
                 n_out,
                 comment,
-                "View",
                 low,
                 high,
                 l6,
                 u6,
                 l12,
                 u12,
+                "",
             ]
             ws.append(row)
             out_rows += 1
 
             row_idx = 1 + out_rows
+            for col_name in ("Original LTL", "Original UTL"):
+                col_idx = headers.index(col_name) + 1
+                ws.cell(row=row_idx, column=col_idx).number_format = "0.######"
             for col_name in ("LTL 6s", "UTL 6s", "LTL 12s", "UTL 12s"):
                 col_idx = headers.index(col_name) + 1
                 ws.cell(row=row_idx, column=col_idx).number_format = "0.0"
@@ -2576,13 +2786,16 @@ def generate_yield_cpk_report(
 
         yes_fill = PatternFill(patternType="solid", fgColor="FFC7CE")
         no_fill = PatternFill(patternType="solid", fgColor="C6EFCE")
+        neutral_fill = PatternFill(patternType="solid", fgColor="FFEB9C")
         yes_font = Font(color="9C0006")
         no_font = Font(color="006100")
+        neutral_font = Font(color="9C6500")
         yes_no_metric_headers = [
             "Fails",
             "Cpk<1.67",
             "Cpk>20",
             "Site-to-Site Delta",
+            "Skewness",
         ]
         for col_name in yes_no_metric_headers:
             col_idx = headers.index(col_name) + 1
@@ -2649,9 +2862,23 @@ def generate_yield_cpk_report(
                 multimodality_cell.fill = yes_fill
                 multimodality_cell.font = yes_font
 
+            te_notes_cell = ws.cell(row=row_idx, column=headers.index("TE notes") + 1)
+            te_notes_cell.fill = PatternFill(fill_type=None)
+            te_notes_cell.font = Font(color="000000")
+
         # Auto-fit columns.
         _autofit_openpyxl_columns(ws)
         _autofit_openpyxl_columns(ws_plots)
+
+        hidden_start_idx = headers.index("Original LTL") + 1
+        hidden_end_idx = headers.index("UTL 12s") + 1
+        hidden_start = _excel_col_letter(hidden_start_idx)
+        hidden_end = _excel_col_letter(hidden_end_idx)
+        ws.column_dimensions.group(hidden_start, hidden_end, outline_level=1, hidden=True)
+        for col_idx in range(hidden_start_idx, hidden_end_idx + 1):
+            col_letter = _excel_col_letter(col_idx)
+            ws.column_dimensions[col_letter].hidden = True
+            ws.column_dimensions[col_letter].outline_level = 1
 
         # Freeze header row.
         ws.freeze_panes = "A2"
