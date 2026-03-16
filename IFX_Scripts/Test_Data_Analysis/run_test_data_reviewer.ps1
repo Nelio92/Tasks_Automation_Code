@@ -54,5 +54,5 @@ if (-not $SkipInstall) {
     & $venvPython -m pip install -r (Join-Path $scriptRoot "requirements-tests-data-analysis.txt")
 }
 
-Write-Host "Running Tests_Data_Analysis with config: $ConfigPath"
-& $venvPython (Join-Path $scriptRoot "run_tests_data_analysis.py") --config $ConfigPath
+Write-Host "Running Test_Data_Reviewer with config: $ConfigPath"
+& $venvPython (Join-Path $scriptRoot "run_test_data_reviewer.py") --config $ConfigPath

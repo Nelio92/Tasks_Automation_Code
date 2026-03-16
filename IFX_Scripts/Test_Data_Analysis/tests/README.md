@@ -1,6 +1,6 @@
-# Test_Data_Analysis test assets
+# Test_Data_Reviewer test assets
 
-This folder contains a tiny checked-in sample input and an end-to-end smoke test for `run_tests_data_analysis.py`.
+This folder contains a tiny checked-in sample input and an end-to-end smoke test for `run_test_data_reviewer.py`.
 
 ## Local run
 

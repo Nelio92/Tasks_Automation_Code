@@ -1,11 +1,11 @@
-# Test Data Analysis — User Guide
+# Test Data Reviewer — User Guide
 
 ## 1) What this tool does
 
-`TestDataAnalysis.exe` analyzes production test data and generates review files for Test Engineering.
+`TestDataReviewer.exe` analyzes production test data and generates review files for Test Engineering.
 
 Main outputs:
-- `Test_Data_Analysis_Report.xlsx`
+- `Test_Data_Reviewer_Report.xlsx`
 - `cdf_plots/...` PNG files
 - optional `Correlation_Report.xlsx`
 - optional STDF conversion artifacts under `Artifacts`
@@ -18,11 +18,11 @@ The tool is delivered as an executable. No Python installation is required for n
 
 This release folder contains:
 
-- `TestDataAnalysis.exe`
+- `TestDataReviewer.exe`
   - main executable
 - `configs/`
   - YAML configuration profiles
-- `Tests_Data_Analysis_User_Guide.md`
+- `Test_Data_Reviewer_User_Guide.md`
   - this guide
 
 Available config profiles in this release:
@@ -68,7 +68,7 @@ Important assumptions:
 Typical outputs are written to the `output_folder` defined in the selected YAML config.
 
 ### Main report
-- `Test_Data_Analysis_Report.xlsx`
+- `Test_Data_Reviewer_Report.xlsx`
   - one analysis sheet per input CSV
   - plot sheet(s) with embedded CDF and wafer map images
   - hyperlinks to plot locations when available
@@ -113,13 +113,13 @@ Open PowerShell in the release folder and use one of the commands below.
 ### Run with the default profile
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml
+./TestDataReviewer.exe --config ./configs/config.yaml
 ```
 
 ### Run with an explicit config path
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml
+./TestDataReviewer.exe --config ./configs/config.yaml
 ```
 
 ### Dry-run only
@@ -127,7 +127,7 @@ Open PowerShell in the release folder and use one of the commands below.
 This checks the config and prints the resolved settings without running the analysis.
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml --dry-run
+./TestDataReviewer.exe --config ./configs/config.yaml --dry-run
 ```
 
 ---
@@ -146,7 +146,7 @@ Recommended setup:
 Run:
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml
+./TestDataReviewer.exe --config ./configs/config.yaml
 ```
 
 Result:
@@ -175,7 +175,7 @@ Common examples for `stdf_single_file`:
 Run:
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml
+./TestDataReviewer.exe --config ./configs/config.yaml
 ```
 
 Result:
@@ -205,7 +205,7 @@ Then run the selected profile.
 Use dry-run before running a large dataset.
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml --dry-run
+./TestDataReviewer.exe --config ./configs/config.yaml --dry-run
 ```
 
 This helps confirm:
@@ -229,7 +229,7 @@ Example:
 Run:
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config_teamA.yaml
+./TestDataReviewer.exe --config ./configs/config_teamA.yaml
 ```
 
 ---
@@ -287,7 +287,7 @@ Only tests whose module prefix is listed in `modules` are evaluated.
   - unusually high Cpk; review for data/spec issues
 
 ### Other useful fields
-- **Fail Chips**
+- **Failing Chips**
   - based on `Low` / `High` limits when available
 - **Outliers**
   - based on a robust MAD method
@@ -302,7 +302,7 @@ Only tests whose module prefix is listed in `modules` are evaluated.
 - first run a dry-run:
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml --dry-run
+./TestDataReviewer.exe --config ./configs/config.yaml --dry-run
 ```
 
 ### Config file not found
@@ -358,25 +358,25 @@ Recommended pattern:
 ### Default run
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml
+./TestDataReviewer.exe --config ./configs/config.yaml
 ```
 
 ### Dry-run
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config.yaml --dry-run
+./TestDataReviewer.exe --config ./configs/config.yaml --dry-run
 ```
 
 ### Run with a custom config copy
 
 ```powershell
-./TestDataAnalysis.exe --config ./configs/config_myproject.yaml
+./TestDataReviewer.exe --config ./configs/config_myproject.yaml
 ```
 
 ### Run from another folder using an absolute config path
 
 ```powershell
-C:\path\to\release_pyinstaller\TestDataAnalysis.exe --config C:\path\to\release_pyinstaller\configs\config.yaml
+C:\path\to\release_pyinstaller\TestDataReviewer.exe --config C:\path\to\release_pyinstaller\configs\config.yaml
 ```
 
 ---

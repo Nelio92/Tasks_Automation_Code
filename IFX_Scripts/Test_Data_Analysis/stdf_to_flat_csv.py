@@ -1240,7 +1240,7 @@ def convert_stdf_folder(
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Convert STDF/EFF inputs into the flat CSV format expected by Tests_Data_Analysis.py")
+    parser = argparse.ArgumentParser(description="Convert STDF/EFF inputs into the flat CSV format expected by Test_Data_Reviewer.py")
     parser.add_argument("--input-folder", type=Path, required=True, help="Folder containing .stdf/.std/.eff inputs")
     parser.add_argument("--output-folder", type=Path, required=True, help="Folder where flat CSV files will be written")
     parser.add_argument("--single-file", type=str, default=None, help="Optional single input file name to convert")

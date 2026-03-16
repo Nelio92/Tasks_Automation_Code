@@ -16,8 +16,8 @@ TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
 if str(TEST_DATA_ANALYSIS_DIR) not in sys.path:
     sys.path.insert(0, str(TEST_DATA_ANALYSIS_DIR))
 
-import Tests_Data_Analysis as analysis
-import run_tests_data_analysis as launcher
+import Test_Data_Reviewer as analysis
+import run_test_data_reviewer as launcher
 import stdf_to_flat_csv as converter
 
 

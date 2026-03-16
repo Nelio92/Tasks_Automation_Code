@@ -1,9 +1,9 @@
-TEST DATA ANALYSIS - QUICK START
+TEST DATA REVIEWER - QUICK START
 ================================
 
 This folder contains a ready-to-use executable:
 
-  TestDataAnalysis.exe
+  TestDataReviewer.exe
 
 You do NOT need to install Python to use it.
 
@@ -30,11 +30,11 @@ If you are using a new dataset, first make a copy of a config file and edit the 
 
 Open PowerShell in this folder and run:
 
-  .\TestDataAnalysis.exe --config .\configs\config.yaml
+  .\TestDataReviewer.exe --config .\configs\config.yaml
 
 Or use another config:
 
-  .\TestDataAnalysis.exe --config .\configs\config_teamA.yaml
+  .\TestDataReviewer.exe --config .\configs\config_teamA.yaml
 
 --------------------------------------------------
 3) DRY-RUN FIRST (RECOMMENDED)
@@ -42,7 +42,7 @@ Or use another config:
 
 To validate the config without starting the analysis:
 
-  .\TestDataAnalysis.exe --config .\configs\config.yaml --dry-run
+  .\TestDataReviewer.exe --config .\configs\config.yaml --dry-run
 
 Use dry-run to confirm:
 - the correct config is used
@@ -75,7 +75,7 @@ C) Analyze only one STDF/EFF source file
 The tool writes results into the configured output folder.
 
 Typical outputs:
-- Test_Data_Analysis_Report.xlsx
+- Test_Data_Reviewer_Report.xlsx
 - cdf_plots\...
 - Correlation_Report.xlsx (if enabled)
 - Artifacts\... (if STDF conversion is enabled)
@@ -86,7 +86,7 @@ Typical outputs:
 
 First try:
 
-  .\TestDataAnalysis.exe --config .\configs\config.yaml --dry-run
+  .\TestDataReviewer.exe --config .\configs\config.yaml --dry-run
 
 Check for these common problems:
 - config file path is wrong
@@ -97,4 +97,4 @@ Check for these common problems:
 
 For more details, read:
 
-  Tests_Data_Analysis_User_Guide.md
+  Test_Data_Reviewer_User_Guide.md

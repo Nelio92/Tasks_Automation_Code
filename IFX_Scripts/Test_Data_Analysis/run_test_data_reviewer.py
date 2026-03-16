@@ -5,7 +5,7 @@ import multiprocessing
 import sys
 from pathlib import Path
 from typing import Any
-import Tests_Data_Analysis as analysis
+import Test_Data_Reviewer as analysis
 import stdf_to_flat_csv
 
 
@@ -466,7 +466,7 @@ def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Tests_Data_Analysis.py with a YAML config file")
+    parser = argparse.ArgumentParser(description="Run Test_Data_Reviewer.py with a YAML config file")
     parser.add_argument(
         "--config",
         type=Path,

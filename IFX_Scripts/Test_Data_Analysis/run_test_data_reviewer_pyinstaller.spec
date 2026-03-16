@@ -6,9 +6,9 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 PROJECT_DIR = Path.cwd().resolve()
-ENTRY_SCRIPT = PROJECT_DIR / "run_tests_data_analysis.py"
+ENTRY_SCRIPT = PROJECT_DIR / "run_test_data_reviewer.py"
 CONFIG_DIR = PROJECT_DIR / "configs"
-USER_GUIDE = PROJECT_DIR / "Tests_Data_Analysis_User_Guide.md"
+USER_GUIDE = PROJECT_DIR / "Test_Data_Reviewer_User_Guide.md"
 
 packages_with_dynamic_imports = [
     "yaml",
@@ -74,7 +74,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="TestDataAnalysis",
+    name="TestDataReviewer",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

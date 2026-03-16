@@ -21,7 +21,7 @@ SAMPLE_SHEET_NAME = "smoke_Q2_sample"
 SAMPLE_PLOTS_SHEET_NAME = "smoke_Q2_sample_PLOTS"
 
 
-class TestsDataAnalysisSmokeTest(unittest.TestCase):
+class TestDataReviewerSmokeTest(unittest.TestCase):
     def test_cli_generates_expected_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -52,7 +52,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             )
 
             result = subprocess.run(
-                [sys.executable, "run_tests_data_analysis.py", "--config", str(config_path)],
+                [sys.executable, "run_test_data_reviewer.py", "--config", str(config_path)],
                 cwd=TEST_DATA_ANALYSIS_DIR,
                 capture_output=True,
                 text=True,
@@ -75,7 +75,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
             self.assertIn("[Workflow]", result.stdout)
             self.assertIn("100%", result.stdout)
 
-            yield_report = output_dir / "Test_Data_Analysis_Report.xlsx"
+            yield_report = output_dir / "Test_Data_Reviewer_Report.xlsx"
             correlation_report = output_dir / "Correlation_Report.xlsx"
             self.assertTrue(yield_report.exists(), "Yield/Cpk report was not created")
             self.assertTrue(correlation_report.exists(), "Correlation report was not created")
@@ -95,7 +95,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 worksheet = workbook[SAMPLE_SHEET_NAME]
                 plots_worksheet = workbook[SAMPLE_PLOTS_SHEET_NAME]
                 data_rows = list(worksheet.iter_rows(min_row=2, values_only=True))
-                self.assertEqual(overview_worksheet["A1"].value, "Test Data Analysis Overview")
+                self.assertEqual(overview_worksheet["A1"].value, "Test Data Reviewer Overview")
                 self.assertEqual(overview_worksheet["A5"].value, "Files processed")
                 self.assertEqual(overview_worksheet["B5"].value, 1)
                 self.assertEqual(overview_worksheet["A7"].value, "Affected tests")
@@ -104,7 +104,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(overview_worksheet["A20"].value, "Module level summary")
                 self.assertEqual(overview_worksheet["D21"].value, "Fails")
                 self.assertEqual(overview_worksheet["H21"].value, "Unique Values")
-                self.assertEqual(overview_worksheet["I21"].value, "Skewness")
+                self.assertEqual(overview_worksheet["I21"].value, "Multimodality")
                 self.assertEqual(overview_worksheet["A22"].value, SAMPLE_FILE_NAME)
                 self.assertEqual(overview_worksheet["B22"].value, "TXPA")
                 self.assertEqual(overview_worksheet["C22"].value, "Fails + Cpk<1.67")
@@ -122,11 +122,10 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(worksheet["J1"].value, "Cpk<1.67")
                 self.assertEqual(worksheet["M1"].value, "Multimodality")
                 self.assertEqual(worksheet["N1"].value, "Unique Values")
-                self.assertEqual(worksheet["O1"].value, "Skewness")
-                self.assertEqual(worksheet["P1"].value, "Findings")
-                self.assertEqual(worksheet["Q1"].value, "Outliers")
-                self.assertEqual(worksheet["R1"].value, "N")
-                self.assertEqual(worksheet["Y1"].value, "TE notes")
+                self.assertEqual(worksheet["O1"].value, "Findings")
+                self.assertEqual(worksheet["P1"].value, "Outliers")
+                self.assertEqual(worksheet["Q1"].value, "N")
+                self.assertEqual(worksheet["X1"].value, "TE notes")
                 self.assertEqual(worksheet["I1"].alignment.horizontal, "center")
                 self.assertEqual(worksheet["I1"].alignment.vertical, "center")
                 self.assertEqual(worksheet["I1"].alignment.textRotation, 90)
@@ -153,11 +152,10 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(txpa_row[11], "NO")
                 self.assertEqual(txpa_row[12], 1)
                 self.assertEqual(txpa_row[13], "YES")
-                self.assertEqual(txpa_row[14], "NO")
-                self.assertIn("large spread", str(txpa_row[15]).lower())
-                self.assertEqual(txpa_row[16], 0)
-                self.assertEqual(txpa_row[17], 4)
-                self.assertEqual(txpa_row[24], None)
+                self.assertIn("large spread", str(txpa_row[14]).lower())
+                self.assertEqual(txpa_row[15], 0)
+                self.assertEqual(txpa_row[16], 4)
+                self.assertEqual(txpa_row[23], None)
             finally:
                 workbook.close()
 
@@ -187,19 +185,19 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 self.assertEqual(worksheet_with_formatting["I2"].fill.fgColor.rgb, "00FFC7CE")
                 self.assertEqual(worksheet_with_formatting["J2"].fill.fgColor.rgb, "00FFC7CE")
                 self.assertEqual(worksheet_with_formatting["K2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["M2"].fill.fgColor.rgb, "00C6EFCE")
                 self.assertEqual(worksheet_with_formatting["N2"].fill.fgColor.rgb, "00C6EFCE")
-                self.assertEqual(worksheet_with_formatting["O2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["R2"].number_format, "0.######")
                 self.assertEqual(worksheet_with_formatting["S2"].number_format, "0.######")
-                self.assertEqual(worksheet_with_formatting["T2"].number_format, "0.######")
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["R"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["S"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["T"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["U"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["V"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["W"].hidden))
-                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["X"].hidden))
                 self.assertFalse(bool(worksheet_with_formatting.column_dimensions["E"].hidden))
-                self.assertFalse(bool(worksheet_with_formatting.column_dimensions["Y"].hidden))
-                self.assertIsNone(worksheet_with_formatting["Y2"].fill.patternType)
+                self.assertFalse(bool(worksheet_with_formatting.column_dimensions["X"].hidden))
+                self.assertIsNone(worksheet_with_formatting["X2"].fill.patternType)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["I"].width), 12.0)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["J"].width), 12.0)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["K"].width), 12.0)
@@ -214,7 +212,7 @@ class TestsDataAnalysisSmokeTest(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(str(rule.sqref) in {"I22:I23", "I22:I23"} for rule in overview_cf_rules),
-                    "Expected module-level Skewness color scale formatting on column I",
+                    "Expected module-level Multimodality color scale formatting on column I",
                 )
             finally:
                 workbook_with_formatting.close()

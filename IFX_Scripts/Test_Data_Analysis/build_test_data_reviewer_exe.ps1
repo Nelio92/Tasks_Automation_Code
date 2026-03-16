@@ -10,12 +10,12 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspaceRoot = (Resolve-Path (Join-Path $scriptRoot "../../..")).Path
 $venvPython = Join-Path $workspaceRoot ".venv/Scripts/python.exe"
-$specPath = Join-Path $scriptRoot "run_tests_data_analysis_pyinstaller.spec"
+$specPath = Join-Path $scriptRoot "run_test_data_reviewer_pyinstaller.spec"
 $distRoot = Join-Path $scriptRoot "dist"
 $buildRoot = Join-Path $scriptRoot "build"
 $releaseRoot = Join-Path $scriptRoot $ReleaseDir
-$exeSource = Join-Path $distRoot "TestDataAnalysis.exe"
-$releaseExe = Join-Path $releaseRoot "TestDataAnalysis.exe"
+$exeSource = Join-Path $distRoot "TestDataReviewer.exe"
+$releaseExe = Join-Path $releaseRoot "TestDataReviewer.exe"
 $configReleaseDir = Join-Path $releaseRoot "configs"
 $releaseReadme = Join-Path $scriptRoot "README.txt"
 
@@ -53,11 +53,11 @@ New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $configReleaseDir | Out-Null
 Copy-Item $exeSource $releaseExe -Force
 Copy-Item (Join-Path $scriptRoot "configs/*.yaml") $configReleaseDir -Force
-Copy-Item (Join-Path $scriptRoot "Tests_Data_Analysis_User_Guide.md") $releaseRoot -Force
+Copy-Item (Join-Path $scriptRoot "Test_Data_Reviewer_User_Guide.md") $releaseRoot -Force
 if (Test-Path $releaseReadme) {
     Copy-Item $releaseReadme $releaseRoot -Force
 }
-$releaseLauncher = Join-Path $releaseRoot "run_tests_data_analysis.ps1"
+$releaseLauncher = Join-Path $releaseRoot "run_test_data_reviewer.ps1"
 if (Test-Path $releaseLauncher) {
     Remove-Item $releaseLauncher -Force
 }

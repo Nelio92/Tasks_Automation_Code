@@ -1,4 +1,4 @@
-"""Flat CSV test data analysis + reporting.
+"""Flat CSV test data reviewer + reporting.
 
 This script is designed for large, semicolon-separated "flat" CSV exports where:
 - The header row contains metadata columns (e.g. LOT/WAFER/X/Y/SITE_NUM) and many
@@ -46,7 +46,7 @@ WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_NARROW = 56
 # ================================================
 # INJECTED BY YAML LAUNCHER - DO NOT EDIT MANUALLY
 # ================================================
-# These values are intentionally populated by `run_tests_data_analysis.py`
+# These values are intentionally populated by `run_test_data_reviewer.py`
 # from a YAML config file before `run()` is called.
 
 # Input/Output
@@ -110,8 +110,8 @@ def _require_runtime_configuration() -> dict[str, Any]:
     if missing:
         joined = ", ".join(missing)
         raise RuntimeError(
-            "Tests_Data_Analysis runtime configuration is missing. "
-            "Run via run_tests_data_analysis.py with a YAML config file. "
+            "Test_Data_Reviewer runtime configuration is missing. "
+            "Run via run_test_data_reviewer.py with a YAML config file. "
             f"Missing: {joined}"
         )
 
@@ -1347,9 +1347,7 @@ METRIC_CPK_LOW = "cpk_low"
 METRIC_CPK_HIGH = "cpk_high"
 METRIC_SITE_DELTA = "site_to_site_delta"
 METRIC_UNIQUE_VALUES = "unique_value_count"
-METRIC_SKEWNESS = "skewness"
 METRIC_MULTIMODALITY = "multimodality"
-SKEWNESS_ABS_THRESHOLD = 1.0
 
 METRIC_DISPLAY_ORDER: tuple[str, ...] = (
     METRIC_YIELD,
@@ -1357,7 +1355,6 @@ METRIC_DISPLAY_ORDER: tuple[str, ...] = (
     METRIC_CPK_HIGH,
     METRIC_SITE_DELTA,
     METRIC_UNIQUE_VALUES,
-    METRIC_SKEWNESS,
     METRIC_MULTIMODALITY,
 )
 
@@ -1367,7 +1364,6 @@ METRIC_PRIORITY: dict[str, str] = {
     METRIC_CPK_HIGH: "MEDIUM",
     METRIC_SITE_DELTA: "MEDIUM",
     METRIC_UNIQUE_VALUES: "LOW",
-    METRIC_SKEWNESS: "LOW",
     METRIC_MULTIMODALITY: "MEDIUM",
 }
 
@@ -1415,7 +1411,6 @@ class TestMetricAssessment:
     site_delta_sigma: float | None
     worst_site: str | None
     unique_value_count: int | None
-    skewness: float | None
     is_analog_unit: bool
     peak_count: int
     multimodality_reason: str | None
@@ -1445,8 +1440,6 @@ def _metric_label(
         return "Site-to-Site Delta"
     if metric_key == METRIC_UNIQUE_VALUES:
         return "Unique Values"
-    if metric_key == METRIC_SKEWNESS:
-        return "Skewness"
     if metric_key == METRIC_MULTIMODALITY:
         return "Multimodality"
     return metric_key
@@ -1618,30 +1611,6 @@ def _unique_value_count(values, *, unit: str | None) -> tuple[int | None, bool]:
     return unique_count, True
 
 
-def _skewness_value(values, *, is_analog: bool) -> float | None:
-    import numpy as np
-
-    if not is_analog:
-        return None
-
-    finite = np.asarray(values, dtype=float)
-    finite = finite[np.isfinite(finite)]
-    if finite.size < MIN_SAMPLES_FOR_UNIQUE_VALUE_CHECK:
-        return None
-
-    mean = float(np.mean(finite))
-    centered = finite - mean
-    m2 = float(np.mean(centered**2))
-    if not np.isfinite(m2) or m2 <= 0.0:
-        return 0.0
-
-    m3 = float(np.mean(centered**3))
-    skew = m3 / (m2 ** 1.5)
-    if not np.isfinite(skew):
-        return None
-    return float(skew)
-
-
 def _classify_wafer_process_signature(values, *, meta_cols) -> str | None:
     import numpy as np
     import pandas as pd
@@ -1795,10 +1764,6 @@ def _assess_test_metrics(
     if is_analog and unique_values is not None and unique_values < 10:
         metric_keys.append(METRIC_UNIQUE_VALUES)
 
-    skewness = _skewness_value(finite, is_analog=is_analog)
-    if skewness is not None and abs(skewness) >= SKEWNESS_ABS_THRESHOLD:
-        metric_keys.append(METRIC_SKEWNESS)
-
     multimodality_eligible = is_analog and not _is_go_nogo_test(unit=unit, unique_value_count=unique_values)
     peak_count = _count_hist_peaks(finite) if finite.size and multimodality_eligible else 1
     multimodality_reason = None
@@ -1825,7 +1790,6 @@ def _assess_test_metrics(
         site_delta_sigma=site_delta,
         worst_site=worst_site,
         unique_value_count=unique_values,
-        skewness=skewness,
         is_analog_unit=is_analog,
         peak_count=peak_count,
         multimodality_reason=multimodality_reason,
@@ -1938,9 +1902,6 @@ def _build_comment(
         if metric_assessment.unique_value_count < 10:
             parts.append(f"Analog unique values low ({metric_assessment.unique_value_count})")
 
-    if metric_assessment.skewness is not None and abs(metric_assessment.skewness) >= SKEWNESS_ABS_THRESHOLD:
-        parts.append(f"Skewness high ({metric_assessment.skewness:.2f})")
-
     # Multi-modality heuristic.
     if metric_assessment.peak_count >= 2:
         parts.append(f"Possible multi-modal distribution (peaks≈{metric_assessment.peak_count})")
@@ -2046,7 +2007,6 @@ def _status_for_test(
     cpk_high: float,
     site_to_site_delta: bool = False,
     unique_value_count_low: bool = False,
-    skewness: bool = False,
     multimodality: bool = False,
 ) -> str | None:
     metric_keys: list[str] = []
@@ -2060,8 +2020,6 @@ def _status_for_test(
         metric_keys.append(METRIC_SITE_DELTA)
     if unique_value_count_low:
         metric_keys.append(METRIC_UNIQUE_VALUES)
-    if skewness:
-        metric_keys.append(METRIC_SKEWNESS)
     if multimodality:
         metric_keys.append(METRIC_MULTIMODALITY)
     return _status_text_from_metric_keys(
@@ -2131,7 +2089,7 @@ def _add_overview_sheet(
         for priority in ("HIGH", "MEDIUM", "LOW", "OK")
     }
 
-    ws["A1"] = "Test Data Analysis Overview"
+    ws["A1"] = "Test Data Reviewer Overview"
     ws["A1"].font = Font(bold=True, size=16)
     ws["A1"].fill = title_fill
 
@@ -2159,7 +2117,6 @@ def _add_overview_sheet(
         ("Cpk>20 count", int(metric_counts.get(METRIC_CPK_HIGH, 0))),
         ("Site-to-Site Delta count", int(metric_counts.get(METRIC_SITE_DELTA, 0))),
         ("Unique Values count", int(metric_counts.get(METRIC_UNIQUE_VALUES, 0))),
-        ("Skewness count", int(metric_counts.get(METRIC_SKEWNESS, 0))),
         ("Multimodality count", int(metric_counts.get(METRIC_MULTIMODALITY, 0))),
     ]
     for row_idx, (label, value) in enumerate(summary_rows, start=3):
@@ -2218,7 +2175,6 @@ def _add_overview_sheet(
         "Cpk>20",
         "Site-to-Site Delta",
         "Unique Values",
-        "Skewness",
         "Multimodality",
     ]
     for col_idx, header in enumerate(traffic_headers, start=1):
@@ -2249,7 +2205,7 @@ def _add_overview_sheet(
     module_metric_start_row = module_metric_header_row + 1
     module_metric_end_row = row_cursor - 1
     if module_metric_end_row >= module_metric_start_row:
-        for col_idx in range(4, 12):
+        for col_idx in range(4, 4 + len(METRIC_DISPLAY_ORDER)):
             col_letter = _excel_col_letter(col_idx)
             ws.conditional_formatting.add(
                 f"{col_letter}{module_metric_start_row}:{col_letter}{module_metric_end_row}",
@@ -2454,7 +2410,6 @@ def generate_yield_cpk_report(
             "Site-to-Site Delta",
             "Multimodality",
             "Unique Values",
-            "Skewness",
             "Findings",
             "Outliers",
             "N",
@@ -2478,7 +2433,6 @@ def generate_yield_cpk_report(
             "Site-to-Site Delta",
             "Multimodality",
             "Unique Values",
-            "Skewness",
         }
         for col_idx, header in enumerate(headers, start=1):
             if header in metric_header_names:
@@ -2700,7 +2654,6 @@ def generate_yield_cpk_report(
                 "YES" if METRIC_SITE_DELTA in metric_key_set else "NO",
                 max(int(assessment.peak_count or 0), 1),
                 "NO" if METRIC_UNIQUE_VALUES in metric_key_set else "YES",
-                "YES" if METRIC_SKEWNESS in metric_key_set else "NO",
                 comment,
                 n_out,
                 n,
@@ -2786,7 +2739,6 @@ def generate_yield_cpk_report(
             "Cpk<1.67",
             "Cpk>20",
             "Site-to-Site Delta",
-            "Skewness",
         ]
         for col_name in yes_no_metric_headers:
             col_idx = headers.index(col_name) + 1
@@ -2878,7 +2830,7 @@ def generate_yield_cpk_report(
 
     from datetime import datetime
 
-    out_xlsx = output_folder / "Test_Data_Analysis_Report.xlsx"
+    out_xlsx = output_folder / "Test_Data_Reviewer_Report.xlsx"
     if overview_entries:
         _add_overview_sheet(
             wb,
@@ -2900,7 +2852,7 @@ def generate_yield_cpk_report(
         _enable_clickable_plot_images(out_xlsx, plot_image_targets_by_sheet)
     except PermissionError:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        alt = output_folder / f"Test_Data_Analysis_Report_{ts}.xlsx"
+        alt = output_folder / f"Test_Data_Reviewer_Report_{ts}.xlsx"
         wb.save(alt)
         _enable_clickable_plot_images(alt, plot_image_targets_by_sheet)
         print(f"Could not overwrite (file open?): {out_xlsx}")
@@ -3161,6 +3113,6 @@ def run() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(
-        "Direct execution of Tests_Data_Analysis.py is disabled. "
-        "Use run_tests_data_analysis.py --config <yaml> or run_tests_data_analysis.ps1."
+        "Direct execution of Test_Data_Reviewer.py is disabled. "
+        "Use run_test_data_reviewer.py --config <yaml> or run_test_data_reviewer.ps1."
     )

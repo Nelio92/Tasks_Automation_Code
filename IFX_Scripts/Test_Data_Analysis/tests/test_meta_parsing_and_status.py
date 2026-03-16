@@ -14,7 +14,7 @@ TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
 if str(TEST_DATA_ANALYSIS_DIR) not in sys.path:
     sys.path.insert(0, str(TEST_DATA_ANALYSIS_DIR))
 
-import Tests_Data_Analysis as analysis
+import Test_Data_Reviewer as analysis
 
 
 SAMPLE_INPUT = TEST_DATA_ANALYSIS_DIR / "tests" / "smoke_input" / "smoke_Q2_sample.csv"
@@ -129,36 +129,9 @@ class StatusLogicUnitTests(unittest.TestCase):
                 yield_threshold=100.0,
                 cpk_low=1.67,
                 cpk_high=20.0,
-                skewness=True,
+                multimodality=True,
             ),
-            "Skewness",
-        )
-        self.assertIsNone(
-            analysis._status_for_test(
-                yield_pct=100.0,
-                cpk=1.67,
-                yield_threshold=100.0,
-                cpk_low=1.67,
-                cpk_high=20.0,
-            )
-        )
-        self.assertIsNone(
-            analysis._status_for_test(
-                yield_pct=None,
-                cpk=20.0,
-                yield_threshold=100.0,
-                cpk_low=1.67,
-                cpk_high=20.0,
-            )
-        )
-        self.assertIsNone(
-            analysis._status_for_test(
-                yield_pct=None,
-                cpk=None,
-                yield_threshold=100.0,
-                cpk_low=1.67,
-                cpk_high=20.0,
-            )
+            "Multimodality",
         )
 
     def test_assess_test_metrics_detects_site_delta_and_unique_values(self) -> None:
@@ -319,33 +292,6 @@ class StatusLogicUnitTests(unittest.TestCase):
         self.assertEqual(assessment.priority, "MEDIUM")
         self.assertGreaterEqual(assessment.peak_count, 2)
         self.assertIsNotNone(assessment.multimodality_reason)
-
-    def test_assess_test_metrics_detects_skewness(self) -> None:
-        metric_frame = pd.DataFrame(
-            {
-                "SITE_NUM": ([0] * 50) + ([1] * 50),
-                "WAFER": (['W1'] * 100),
-                "X": list(range(100)),
-                "Y": [idx % 10 for idx in range(100)],
-            }
-        )
-        series = pd.Series(([0.0] * 75) + ([1.0] * 15) + ([5.0] * 10), dtype=float)
-
-        assessment = analysis._assess_test_metrics(
-            series=series,
-            meta_cols=metric_frame,
-            unit="V",
-            yield_pct=100.0,
-            cpk=2.0,
-            yield_threshold=100.0,
-            cpk_low=1.67,
-            cpk_high=20.0,
-            wafer_sig="S21P",
-        )
-
-        self.assertIn(analysis.METRIC_SKEWNESS, assessment.metric_keys)
-        self.assertIsNotNone(assessment.skewness)
-        self.assertGreater(abs(float(assessment.skewness)), analysis.SKEWNESS_ABS_THRESHOLD)
 
     def test_assess_test_metrics_excludes_multimodality_for_digital_tests(self) -> None:
         metric_frame = pd.DataFrame(

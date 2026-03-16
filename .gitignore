@@ -6,7 +6,7 @@ __pycache__/
 IFX_Scripts/Test_Data_Analysis/Outputs/
 IFX_Scripts/Test_Data_Analysis/build/
 IFX_Scripts/Test_Data_Analysis/dist/
-IFX_Scripts/Test_Data_Analysis/release_pyinstaller/TestDataAnalysis.exe
+IFX_Scripts/Test_Data_Analysis/release_pyinstaller/TestDataReviewer.exe
 IFX_Scripts/Test_Data_Analysis/release_pyinstaller/*.zip
 **/Outputs/
 **/build/
