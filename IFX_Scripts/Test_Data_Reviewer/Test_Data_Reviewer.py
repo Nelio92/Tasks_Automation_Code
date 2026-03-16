@@ -669,30 +669,25 @@ def _cdf_plot_png(
     # CDF points (not a continuous line), with failing chips highlighted.
     pass_mask = ~fail_mask
     if np.any(pass_mask):
-        ax.plot(
+        ax.scatter(
             v[pass_mask],
             y[pass_mask],
-            linestyle="None",
-            marker=".",
-            markersize=3.0,
-            alpha=0.80,
+            s=14,
+            alpha=0.82,
             color="#1F77B4",
             label=f"Pass chips={int(np.count_nonzero(pass_mask))}",
         )
     if np.any(fail_mask):
-        ax.plot(
+        ax.scatter(
             v[fail_mask],
             y[fail_mask],
-            linestyle="None",
-            marker="o",
-            markersize=4.4,
+            s=20,
             alpha=0.95,
-            markerfacecolor="#D62728",
-            markeredgecolor="#D62728",
+            color="#D62728",
             label=f"Fail chips={n_fail}",
         )
     elif not np.any(pass_mask):
-        ax.plot(v, y, linestyle="None", marker=".", markersize=3.0, alpha=0.85, label="Data")
+        ax.scatter(v, y, s=14, alpha=0.82, color="#1F77B4", label="Data")
 
     # Spec limits (red)
     if low_limit is not None and np.isfinite(low_limit):
@@ -771,30 +766,25 @@ def _cdf_plot_png_pair(
 
     pass_mask = ~fail_mask
     if np.any(pass_mask):
-        ax.plot(
+        ax.scatter(
             v[pass_mask],
             y[pass_mask],
-            linestyle="None",
-            marker=".",
-            markersize=3.0,
-            alpha=0.80,
+            s=14,
+            alpha=0.82,
             color="#1F77B4",
             label=f"Pass chips={int(np.count_nonzero(pass_mask))}",
         )
     if np.any(fail_mask):
-        ax.plot(
+        ax.scatter(
             v[fail_mask],
             y[fail_mask],
-            linestyle="None",
-            marker="o",
-            markersize=4.4,
+            s=20,
             alpha=0.95,
-            markerfacecolor="#D62728",
-            markeredgecolor="#D62728",
+            color="#D62728",
             label=f"Fail chips={n_fail}",
         )
     elif not np.any(pass_mask):
-        ax.plot(v, y, linestyle="None", marker=".", markersize=3.0, alpha=0.85, label="Data")
+        ax.scatter(v, y, s=14, alpha=0.82, color="#1F77B4", label="Data")
 
     if low_limit is not None and np.isfinite(low_limit):
         ax.axvline(float(low_limit), color="#D62728", linestyle="-", linewidth=1.6, label=f"LTL={_fmt_num(float(low_limit))}")
@@ -1347,7 +1337,9 @@ METRIC_CPK_LOW = "cpk_low"
 METRIC_CPK_HIGH = "cpk_high"
 METRIC_SITE_DELTA = "site_to_site_delta"
 METRIC_UNIQUE_VALUES = "unique_value_count"
+METRIC_SKEWNESS = "skewness"
 METRIC_MULTIMODALITY = "multimodality"
+SKEWNESS_ABS_THRESHOLD = 1.0
 
 METRIC_DISPLAY_ORDER: tuple[str, ...] = (
     METRIC_YIELD,
@@ -1355,6 +1347,7 @@ METRIC_DISPLAY_ORDER: tuple[str, ...] = (
     METRIC_CPK_HIGH,
     METRIC_SITE_DELTA,
     METRIC_UNIQUE_VALUES,
+    METRIC_SKEWNESS,
     METRIC_MULTIMODALITY,
 )
 
@@ -1364,6 +1357,7 @@ METRIC_PRIORITY: dict[str, str] = {
     METRIC_CPK_HIGH: "MEDIUM",
     METRIC_SITE_DELTA: "MEDIUM",
     METRIC_UNIQUE_VALUES: "LOW",
+    METRIC_SKEWNESS: "LOW",
     METRIC_MULTIMODALITY: "MEDIUM",
 }
 
@@ -1411,6 +1405,7 @@ class TestMetricAssessment:
     site_delta_sigma: float | None
     worst_site: str | None
     unique_value_count: int | None
+    skewness: float | None
     is_analog_unit: bool
     peak_count: int
     multimodality_reason: str | None
@@ -1440,6 +1435,8 @@ def _metric_label(
         return "Site-to-Site Delta"
     if metric_key == METRIC_UNIQUE_VALUES:
         return "Unique Values"
+    if metric_key == METRIC_SKEWNESS:
+        return "Skewness"
     if metric_key == METRIC_MULTIMODALITY:
         return "Multimodality"
     return metric_key
@@ -1611,6 +1608,74 @@ def _unique_value_count(values, *, unit: str | None) -> tuple[int | None, bool]:
     return unique_count, True
 
 
+def _skewness_value(values, *, is_analog: bool) -> float | None:
+    import numpy as np
+
+    if not is_analog:
+        return None
+
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size < MIN_SAMPLES_FOR_UNIQUE_VALUE_CHECK:
+        return None
+
+    mean = float(np.mean(finite))
+    centered = finite - mean
+    m2 = float(np.mean(centered**2))
+    if not np.isfinite(m2) or m2 <= 0.0:
+        return 0.0
+
+    m3 = float(np.mean(centered**3))
+    skew = m3 / (m2 ** 1.5)
+    if not np.isfinite(skew):
+        return None
+    return float(skew)
+
+
+def _format_fail_coordinates_for_sheet(
+    series,
+    *,
+    meta_cols,
+    low_limit: float | None,
+    high_limit: float | None,
+    max_items: int = 10,
+) -> str:
+    import pandas as pd
+
+    if meta_cols is None or not all(col in getattr(meta_cols, "columns", []) for col in ("X", "Y")):
+        return ""
+    if low_limit is None and high_limit is None:
+        return ""
+
+    low = -math.inf if low_limit is None else float(low_limit)
+    high = math.inf if high_limit is None else float(high_limit)
+
+    df = pd.DataFrame(
+        {
+            "v": pd.to_numeric(series, errors="coerce"),
+            "X": pd.to_numeric(meta_cols["X"], errors="coerce"),
+            "Y": pd.to_numeric(meta_cols["Y"], errors="coerce"),
+        }
+    ).dropna(subset=["v", "X", "Y"])
+    if df.empty:
+        return ""
+
+    failed = df[(df["v"] < low) | (df["v"] > high)].copy()
+    if failed.empty:
+        return ""
+
+    failed = failed.sort_values(["X", "Y"], ascending=[True, True])
+    coords = [
+        f"X{_fmt_wafer_coordinate(x_val)}-Y{_fmt_wafer_coordinate(y_val)}"
+        for x_val, y_val in zip(failed["X"].head(max_items), failed["Y"].head(max_items), strict=False)
+    ]
+    if not coords:
+        return ""
+    if int(failed.shape[0]) > len(coords):
+        coords.append("...")
+    return "; ".join(coords)
+
+
 def _classify_wafer_process_signature(values, *, meta_cols) -> str | None:
     import numpy as np
     import pandas as pd
@@ -1764,6 +1829,10 @@ def _assess_test_metrics(
     if is_analog and unique_values is not None and unique_values < 10:
         metric_keys.append(METRIC_UNIQUE_VALUES)
 
+    skewness = _skewness_value(finite, is_analog=is_analog)
+    if skewness is not None and abs(skewness) >= SKEWNESS_ABS_THRESHOLD:
+        metric_keys.append(METRIC_SKEWNESS)
+
     multimodality_eligible = is_analog and not _is_go_nogo_test(unit=unit, unique_value_count=unique_values)
     peak_count = _count_hist_peaks(finite) if finite.size and multimodality_eligible else 1
     multimodality_reason = None
@@ -1790,6 +1859,7 @@ def _assess_test_metrics(
         site_delta_sigma=site_delta,
         worst_site=worst_site,
         unique_value_count=unique_values,
+        skewness=skewness,
         is_analog_unit=is_analog,
         peak_count=peak_count,
         multimodality_reason=multimodality_reason,
@@ -1902,6 +1972,9 @@ def _build_comment(
         if metric_assessment.unique_value_count < 10:
             parts.append(f"Analog unique values low ({metric_assessment.unique_value_count})")
 
+    if metric_assessment.skewness is not None and abs(metric_assessment.skewness) >= SKEWNESS_ABS_THRESHOLD:
+        parts.append(f"Skewness high ({metric_assessment.skewness:.2f})")
+
     # Multi-modality heuristic.
     if metric_assessment.peak_count >= 2:
         parts.append(f"Possible multi-modal distribution (peaks≈{metric_assessment.peak_count})")
@@ -2007,6 +2080,7 @@ def _status_for_test(
     cpk_high: float,
     site_to_site_delta: bool = False,
     unique_value_count_low: bool = False,
+    skewness: bool = False,
     multimodality: bool = False,
 ) -> str | None:
     metric_keys: list[str] = []
@@ -2020,6 +2094,8 @@ def _status_for_test(
         metric_keys.append(METRIC_SITE_DELTA)
     if unique_value_count_low:
         metric_keys.append(METRIC_UNIQUE_VALUES)
+    if skewness:
+        metric_keys.append(METRIC_SKEWNESS)
     if multimodality:
         metric_keys.append(METRIC_MULTIMODALITY)
     return _status_text_from_metric_keys(
@@ -2117,6 +2193,7 @@ def _add_overview_sheet(
         ("Cpk>20 count", int(metric_counts.get(METRIC_CPK_HIGH, 0))),
         ("Site-to-Site Delta count", int(metric_counts.get(METRIC_SITE_DELTA, 0))),
         ("Unique Values count", int(metric_counts.get(METRIC_UNIQUE_VALUES, 0))),
+        ("Skewness count", int(metric_counts.get(METRIC_SKEWNESS, 0))),
         ("Multimodality count", int(metric_counts.get(METRIC_MULTIMODALITY, 0))),
     ]
     for row_idx, (label, value) in enumerate(summary_rows, start=3):
@@ -2175,6 +2252,7 @@ def _add_overview_sheet(
         "Cpk>20",
         "Site-to-Site Delta",
         "Unique Values",
+        "Skewness",
         "Multimodality",
     ]
     for col_idx, header in enumerate(traffic_headers, start=1):
@@ -2403,14 +2481,16 @@ def generate_yield_cpk_report(
             "CDF Plot",
             "Yield (%)",
             "Cpk",
-            "Failing Chips",
             "Fails",
             "Cpk<1.67",
             "Cpk>20",
             "Site-to-Site Delta",
             "Multimodality",
             "Unique Values",
+            "Skewness",
             "Findings",
+            "Fails Count",
+            "Fails Coordinates",
             "Outliers",
             "N",
             "Original LTL",
@@ -2433,6 +2513,7 @@ def generate_yield_cpk_report(
             "Site-to-Site Delta",
             "Multimodality",
             "Unique Values",
+            "Skewness",
         }
         for col_idx, header in enumerate(headers, start=1):
             if header in metric_header_names:
@@ -2496,6 +2577,14 @@ def generate_yield_cpk_report(
                 n_out = int((np.abs(finite - med) > (outlier_mad_multiplier * mad)).sum())
 
             l6, u6, l12, u12 = _proposed_sigma_limits(numeric)
+            fail_coordinates = ""
+            if METRIC_YIELD in metric_key_set:
+                fail_coordinates = _format_fail_coordinates_for_sheet(
+                    numeric,
+                    meta_cols=meta_cols_df,
+                    low_limit=low,
+                    high_limit=high,
+                )
             comment = _build_comment(
                 series=numeric,
                 meta_cols=meta_cols_df,
@@ -2647,14 +2736,16 @@ def generate_yield_cpk_report(
                 "View",
                 y,
                 c,
-                n_fail,
                 "YES" if METRIC_YIELD in metric_key_set else "NO",
                 "YES" if METRIC_CPK_LOW in metric_key_set else "NO",
                 "YES" if METRIC_CPK_HIGH in metric_key_set else "NO",
                 "YES" if METRIC_SITE_DELTA in metric_key_set else "NO",
                 max(int(assessment.peak_count or 0), 1),
                 "NO" if METRIC_UNIQUE_VALUES in metric_key_set else "YES",
+                "YES" if METRIC_SKEWNESS in metric_key_set else "NO",
                 comment,
+                n_fail,
+                fail_coordinates,
                 n_out,
                 n,
                 low,
@@ -2712,7 +2803,7 @@ def generate_yield_cpk_report(
             _print_progress("Yield files", file_idx, total_files, f"skipped {file_path.name}")
             continue
 
-        fail_chips_col_idx = headers.index("Failing Chips") + 1
+        fail_chips_col_idx = headers.index("Fails Count") + 1
         fail_chips_col_letter = _excel_col_letter(fail_chips_col_idx)
         fail_chips_range = f"{fail_chips_col_letter}2:{fail_chips_col_letter}{1 + out_rows}"
         ws.conditional_formatting.add(
@@ -2739,6 +2830,7 @@ def generate_yield_cpk_report(
             "Cpk<1.67",
             "Cpk>20",
             "Site-to-Site Delta",
+            "Skewness",
         ]
         for col_name in yes_no_metric_headers:
             col_idx = headers.index(col_name) + 1

@@ -129,6 +129,17 @@ class StatusLogicUnitTests(unittest.TestCase):
                 yield_threshold=100.0,
                 cpk_low=1.67,
                 cpk_high=20.0,
+                skewness=True,
+            ),
+            "Skewness",
+        )
+        self.assertEqual(
+            analysis._status_for_test(
+                yield_pct=100.0,
+                cpk=2.0,
+                yield_threshold=100.0,
+                cpk_low=1.67,
+                cpk_high=20.0,
                 multimodality=True,
             ),
             "Multimodality",
@@ -263,6 +274,27 @@ class StatusLogicUnitTests(unittest.TestCase):
         self.assertIn("X50-Y1", summary)
         self.assertNotIn("X51-Y1", summary)
 
+    def test_format_fail_coordinates_for_sheet_limits_to_ten_items(self) -> None:
+        series = pd.Series([0.0, 11.0, 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, 12.0], dtype=float)
+        meta_cols = pd.DataFrame(
+            {
+                "X": [1, 9, 1, 3, 2, 5, 4, 8, 6, 7, 10, 11],
+                "Y": [1, 2, 3, 1, 2, 4, 1, 3, 2, 1, 5, 1],
+            }
+        )
+
+        summary = analysis._format_fail_coordinates_for_sheet(
+            series,
+            meta_cols=meta_cols,
+            low_limit=9.5,
+            high_limit=10.5,
+        )
+
+        self.assertEqual(
+            summary,
+            "X1-Y1; X1-Y3; X2-Y2; X3-Y1; X4-Y1; X5-Y4; X6-Y2; X7-Y1; X8-Y3; X9-Y2; ...",
+        )
+
     def test_assess_test_metrics_detects_multimodality_reason(self) -> None:
         sample_count = 100
         metric_frame = pd.DataFrame(
@@ -292,6 +324,33 @@ class StatusLogicUnitTests(unittest.TestCase):
         self.assertEqual(assessment.priority, "MEDIUM")
         self.assertGreaterEqual(assessment.peak_count, 2)
         self.assertIsNotNone(assessment.multimodality_reason)
+
+    def test_assess_test_metrics_detects_skewness(self) -> None:
+        metric_frame = pd.DataFrame(
+            {
+                "SITE_NUM": ([0] * 50) + ([1] * 50),
+                "WAFER": (["W1"] * 100),
+                "X": list(range(100)),
+                "Y": [idx % 10 for idx in range(100)],
+            }
+        )
+        series = pd.Series(([0.0] * 75) + ([1.0] * 15) + ([5.0] * 10), dtype=float)
+
+        assessment = analysis._assess_test_metrics(
+            series=series,
+            meta_cols=metric_frame,
+            unit="V",
+            yield_pct=100.0,
+            cpk=2.0,
+            yield_threshold=100.0,
+            cpk_low=1.67,
+            cpk_high=20.0,
+            wafer_sig="S21P",
+        )
+
+        self.assertIn(analysis.METRIC_SKEWNESS, assessment.metric_keys)
+        self.assertIsNotNone(assessment.skewness)
+        self.assertGreater(abs(float(assessment.skewness)), analysis.SKEWNESS_ABS_THRESHOLD)
 
     def test_assess_test_metrics_excludes_multimodality_for_digital_tests(self) -> None:
         metric_frame = pd.DataFrame(

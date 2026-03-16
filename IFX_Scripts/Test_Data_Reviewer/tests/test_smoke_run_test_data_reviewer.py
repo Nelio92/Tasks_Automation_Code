@@ -104,7 +104,8 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                 self.assertEqual(overview_worksheet["A20"].value, "Module level summary")
                 self.assertEqual(overview_worksheet["D21"].value, "Fails")
                 self.assertEqual(overview_worksheet["H21"].value, "Unique Values")
-                self.assertEqual(overview_worksheet["I21"].value, "Multimodality")
+                self.assertEqual(overview_worksheet["I21"].value, "Skewness")
+                self.assertEqual(overview_worksheet["J21"].value, "Multimodality")
                 self.assertEqual(overview_worksheet["A22"].value, SAMPLE_FILE_NAME)
                 self.assertEqual(overview_worksheet["B22"].value, "TXPA")
                 self.assertEqual(overview_worksheet["C22"].value, "Fails + Cpk<1.67")
@@ -116,19 +117,21 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                 self.assertEqual(worksheet["E1"].value, "CDF Plot")
                 self.assertEqual(worksheet["F1"].value, "Yield (%)")
                 self.assertEqual(worksheet["G1"].value, "Cpk")
-                self.assertEqual(worksheet["H1"].value, "Failing Chips")
-                self.assertEqual(worksheet["I1"].value, "Fails")
-                self.assertEqual(worksheet["I1"].fill.fgColor.rgb, "00FFFF00")
-                self.assertEqual(worksheet["J1"].value, "Cpk<1.67")
-                self.assertEqual(worksheet["M1"].value, "Multimodality")
-                self.assertEqual(worksheet["N1"].value, "Unique Values")
+                self.assertEqual(worksheet["H1"].value, "Fails")
+                self.assertEqual(worksheet["H1"].fill.fgColor.rgb, "00FFFF00")
+                self.assertEqual(worksheet["I1"].value, "Cpk<1.67")
+                self.assertEqual(worksheet["L1"].value, "Multimodality")
+                self.assertEqual(worksheet["M1"].value, "Unique Values")
+                self.assertEqual(worksheet["N1"].value, "Skewness")
                 self.assertEqual(worksheet["O1"].value, "Findings")
-                self.assertEqual(worksheet["P1"].value, "Outliers")
-                self.assertEqual(worksheet["Q1"].value, "N")
-                self.assertEqual(worksheet["X1"].value, "TE notes")
-                self.assertEqual(worksheet["I1"].alignment.horizontal, "center")
-                self.assertEqual(worksheet["I1"].alignment.vertical, "center")
-                self.assertEqual(worksheet["I1"].alignment.textRotation, 90)
+                self.assertEqual(worksheet["P1"].value, "Fails Count")
+                self.assertEqual(worksheet["Q1"].value, "Fails Coordinates")
+                self.assertEqual(worksheet["R1"].value, "Outliers")
+                self.assertEqual(worksheet["S1"].value, "N")
+                self.assertEqual(worksheet["Z1"].value, "TE notes")
+                self.assertEqual(worksheet["H1"].alignment.horizontal, "center")
+                self.assertEqual(worksheet["H1"].alignment.vertical, "center")
+                self.assertEqual(worksheet["H1"].alignment.textRotation, 90)
                 self.assertEqual(plots_worksheet["C1"].value, "CDF zoomed")
                 self.assertEqual(plots_worksheet["D1"].value, "CDF by Site zoomed")
                 self.assertEqual(plots_worksheet["E1"].value, "Wafer map (static PNG)")
@@ -145,17 +148,19 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                 self.assertEqual(txpa_row[2], "TXPA_OUTPUT_PWR")
                 self.assertEqual(txpa_row[4], "View")
                 self.assertEqual(txpa_row[6], 1.2)
-                self.assertEqual(txpa_row[7], 2)
+                self.assertEqual(txpa_row[7], "YES")
                 self.assertEqual(txpa_row[8], "YES")
-                self.assertEqual(txpa_row[9], "YES")
+                self.assertEqual(txpa_row[9], "NO")
                 self.assertEqual(txpa_row[10], "NO")
-                self.assertEqual(txpa_row[11], "NO")
-                self.assertEqual(txpa_row[12], 1)
-                self.assertEqual(txpa_row[13], "YES")
+                self.assertEqual(txpa_row[11], 1)
+                self.assertEqual(txpa_row[12], "YES")
+                self.assertEqual(txpa_row[13], "NO")
                 self.assertIn("large spread", str(txpa_row[14]).lower())
-                self.assertEqual(txpa_row[15], 0)
-                self.assertEqual(txpa_row[16], 4)
-                self.assertEqual(txpa_row[23], None)
+                self.assertEqual(txpa_row[15], 2)
+                self.assertEqual(txpa_row[16], "X1-Y1; X2-Y2")
+                self.assertEqual(txpa_row[17], 0)
+                self.assertEqual(txpa_row[18], 4)
+                self.assertEqual(txpa_row[25], None)
             finally:
                 workbook.close()
 
@@ -167,40 +172,40 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                 overview_cf_rules = list(overview_with_formatting.conditional_formatting)
                 self.assertTrue(cf_rules, "Expected conditional formatting rules in yield workbook")
                 self.assertTrue(
+                    any(str(rule.sqref) in {"P2", "P2:P2"} for rule in cf_rules),
+                    "Expected Fails Count conditional formatting on column P",
+                )
+                self.assertTrue(
                     any(str(rule.sqref) in {"H2", "H2:H2"} for rule in cf_rules),
-                    "Expected Failing Chips conditional formatting on column H",
+                    "Expected Fails YES/NO conditional formatting on column H",
                 )
                 self.assertTrue(
                     any(str(rule.sqref) in {"I2", "I2:I2"} for rule in cf_rules),
-                    "Expected Fails YES/NO conditional formatting on column I",
+                    "Expected Cpk<1.67 YES/NO conditional formatting on column I",
                 )
                 self.assertTrue(
-                    any(str(rule.sqref) in {"J2", "J2:J2"} for rule in cf_rules),
-                    "Expected Cpk<1.67 YES/NO conditional formatting on column J",
+                    any(str(rule.sqref) in {"N2", "N2:N2"} for rule in cf_rules),
+                    "Expected Skewness conditional formatting on column N",
                 )
-                self.assertTrue(
-                    any(str(rule.sqref) in {"M2", "M2:M2"} for rule in cf_rules),
-                    "Expected Multimodality conditional formatting on column M",
-                )
+                self.assertEqual(worksheet_with_formatting["H2"].fill.fgColor.rgb, "00FFC7CE")
                 self.assertEqual(worksheet_with_formatting["I2"].fill.fgColor.rgb, "00FFC7CE")
-                self.assertEqual(worksheet_with_formatting["J2"].fill.fgColor.rgb, "00FFC7CE")
-                self.assertEqual(worksheet_with_formatting["K2"].fill.fgColor.rgb, "00C6EFCE")
+                self.assertEqual(worksheet_with_formatting["J2"].fill.fgColor.rgb, "00C6EFCE")
                 self.assertEqual(worksheet_with_formatting["M2"].fill.fgColor.rgb, "00C6EFCE")
                 self.assertEqual(worksheet_with_formatting["N2"].fill.fgColor.rgb, "00C6EFCE")
-                self.assertEqual(worksheet_with_formatting["R2"].number_format, "0.######")
-                self.assertEqual(worksheet_with_formatting["S2"].number_format, "0.######")
-                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["R"].hidden))
-                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["S"].hidden))
+                self.assertEqual(worksheet_with_formatting["T2"].number_format, "0.######")
+                self.assertEqual(worksheet_with_formatting["U2"].number_format, "0.######")
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["T"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["U"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["V"].hidden))
                 self.assertTrue(bool(worksheet_with_formatting.column_dimensions["W"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["X"].hidden))
+                self.assertTrue(bool(worksheet_with_formatting.column_dimensions["Y"].hidden))
                 self.assertFalse(bool(worksheet_with_formatting.column_dimensions["E"].hidden))
-                self.assertFalse(bool(worksheet_with_formatting.column_dimensions["X"].hidden))
-                self.assertIsNone(worksheet_with_formatting["X2"].fill.patternType)
+                self.assertFalse(bool(worksheet_with_formatting.column_dimensions["Z"].hidden))
+                self.assertIsNone(worksheet_with_formatting["Z2"].fill.patternType)
+                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["H"].width), 12.0)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["I"].width), 12.0)
                 self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["J"].width), 12.0)
-                self.assertLessEqual(float(worksheet_with_formatting.column_dimensions["K"].width), 12.0)
                 self.assertGreater(float(worksheet_with_formatting.column_dimensions["C"].width), 12.0)
                 self.assertTrue(
                     any(str(rule.sqref) in {"D22:D23", "D22:D23"} for rule in overview_cf_rules),
@@ -212,7 +217,11 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(str(rule.sqref) in {"I22:I23", "I22:I23"} for rule in overview_cf_rules),
-                    "Expected module-level Multimodality color scale formatting on column I",
+                    "Expected module-level Skewness color scale formatting on column I",
+                )
+                self.assertTrue(
+                    any(str(rule.sqref) in {"J22:J23", "J22:J23"} for rule in overview_cf_rules),
+                    "Expected module-level Multimodality color scale formatting on column J",
                 )
             finally:
                 workbook_with_formatting.close()
