@@ -288,6 +288,73 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             finally:
                 analysis.SINGLE_FILE = previous_single_file
 
+    def test_prepare_stdf_inputs_converts_pending_stdf_when_other_csv_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            input_dir = tmp_path / "generated_csv"
+            input_dir.mkdir()
+            (input_dir / "already_generated.csv").write_text("UNIT_ID;SITE_NUM\n", encoding="utf-8")
+            pending_eff = input_dir / "new_measurements.eff"
+            pending_eff.write_text("placeholder", encoding="utf-8")
+
+            previous_single_file = analysis.SINGLE_FILE
+            try:
+                analysis.SINGLE_FILE = None
+                with mock.patch.object(
+                    launcher.stdf_to_flat_csv,
+                    "convert_stdf_folder",
+                    return_value=converter.ConversionSummary(
+                        converted_files=1,
+                        converted_parts=10,
+                        converted_tests=20,
+                        output_files=[input_dir / "new_measurements.csv"],
+                    ),
+                ) as convert_mock:
+                    launcher._prepare_stdf_inputs(
+                        {
+                            "convert_stdf_before_analysis": True,
+                            "input_folder": input_dir,
+                            "output_folder": tmp_path / "reports",
+                            "stdf_file_patterns": ["*.eff"],
+                        }
+                    )
+
+                convert_mock.assert_called_once()
+                self.assertEqual(convert_mock.call_args.kwargs["source_files"], [pending_eff])
+            finally:
+                analysis.SINGLE_FILE = previous_single_file
+
+    def test_prepare_stdf_inputs_skips_when_selected_stdf_outputs_already_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            input_dir = tmp_path / "generated_csv"
+            input_dir.mkdir()
+            source_eff = input_dir / "device.eff"
+            source_eff.write_text("placeholder", encoding="utf-8")
+            (input_dir / "device.csv").write_text("UNIT_ID;SITE_NUM\n", encoding="utf-8")
+
+            previous_single_file = analysis.SINGLE_FILE
+            try:
+                analysis.SINGLE_FILE = None
+                stdout = io.StringIO()
+                with redirect_stdout(stdout), mock.patch.object(
+                    launcher.stdf_to_flat_csv,
+                    "convert_stdf_folder",
+                ) as convert_mock:
+                    launcher._prepare_stdf_inputs(
+                        {
+                            "convert_stdf_before_analysis": True,
+                            "input_folder": input_dir,
+                            "output_folder": tmp_path / "reports",
+                            "stdf_file_patterns": ["*.eff"],
+                        }
+                    )
+
+                convert_mock.assert_not_called()
+                self.assertIn("CSV outputs already exist", stdout.getvalue())
+            finally:
+                analysis.SINGLE_FILE = previous_single_file
+
     def test_prepare_stdf_inputs_skips_conversion_when_target_csv_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

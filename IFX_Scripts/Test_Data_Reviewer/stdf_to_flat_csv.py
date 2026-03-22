@@ -1123,6 +1123,27 @@ def _iter_stdf_files(input_folder: Path, patterns: Sequence[str]) -> list[Path]:
     return sorted(matches.values(), key=lambda item: item.name.lower())
 
 
+def list_stdf_sources(
+    input_folder: Path,
+    *,
+    patterns: Sequence[str] | None = None,
+    single_file: str | None = None,
+    max_files: int | None = None,
+) -> list[Path]:
+    input_folder = Path(input_folder)
+    chosen_patterns = tuple(patterns or DEFAULT_PATTERNS)
+
+    if single_file:
+        stdf_files = [input_folder / single_file]
+    else:
+        stdf_files = _iter_stdf_files(input_folder, chosen_patterns)
+
+    if max_files is not None:
+        stdf_files = stdf_files[:max_files]
+
+    return stdf_files
+
+
 def convert_stdf_folder(
     input_folder: Path,
     output_folder: Path,
@@ -1131,18 +1152,21 @@ def convert_stdf_folder(
     single_file: str | None = None,
     max_files: int | None = None,
     artifacts_output_folder: Path | None = None,
+    source_files: Sequence[Path | str] | None = None,
 ) -> ConversionSummary:
     input_folder = Path(input_folder)
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
-    chosen_patterns = tuple(patterns or DEFAULT_PATTERNS)
 
-    if single_file:
-        stdf_files = [input_folder / single_file]
+    if source_files is not None:
+        stdf_files = [path if isinstance(path, Path) else input_folder / path for path in source_files]
     else:
-        stdf_files = _iter_stdf_files(input_folder, chosen_patterns)
-    if max_files is not None:
-        stdf_files = stdf_files[:max_files]
+        stdf_files = list_stdf_sources(
+            input_folder,
+            patterns=patterns,
+            single_file=single_file,
+            max_files=max_files,
+        )
 
     output_files: list[Path] = []
     dtr_files: list[Path] = []

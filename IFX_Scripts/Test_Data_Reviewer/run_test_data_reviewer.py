@@ -401,9 +401,22 @@ def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
             target_csv_name = stdf_to_flat_csv.csv_name_for_source(target_csv_name)
 
     existing_csvs = sorted(path for path in input_folder.glob("*.csv") if path.is_file())
+    selected_stdf_sources = stdf_to_flat_csv.list_stdf_sources(
+        input_folder,
+        patterns=list(config.get("stdf_file_patterns") or stdf_to_flat_csv.DEFAULT_PATTERNS),
+        single_file=config.get("stdf_single_file"),
+        max_files=analysis.MAX_FILES,
+    )
+    pending_stdf_sources = [
+        source_path
+        for source_path in selected_stdf_sources
+        if not (input_folder / stdf_to_flat_csv.csv_name_for_source(source_path.name)).is_file()
+    ]
     skip_preconversion = False
     if target_csv_name:
         skip_preconversion = (input_folder / target_csv_name).is_file()
+    elif selected_stdf_sources:
+        skip_preconversion = not pending_stdf_sources
     else:
         skip_preconversion = bool(existing_csvs)
 
@@ -417,6 +430,17 @@ def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
                 f"skipped; existing CSV already available ({target_csv_name})",
             )
             print(f"STDF pre-conversion skipped: existing CSV input already available in {input_folder} ({target_csv_name})")
+        elif selected_stdf_sources:
+            _print_progress(
+                "STDF conversion",
+                1,
+                1,
+                f"skipped; CSV outputs already exist for {len(selected_stdf_sources)} selected STDF input file(s)",
+            )
+            print(
+                "STDF pre-conversion skipped: CSV outputs already exist for "
+                f"{len(selected_stdf_sources)} selected STDF input file(s) in {input_folder}"
+            )
         else:
             _print_progress(
                 "STDF conversion",
@@ -436,6 +460,7 @@ def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
         single_file=config.get("stdf_single_file"),
         max_files=analysis.MAX_FILES,
         artifacts_output_folder=artifacts_folder,
+        source_files=pending_stdf_sources,
     )
     if summary.converted_files == 0:
         raise RuntimeError(f"No STDF files were converted from {input_folder}")
