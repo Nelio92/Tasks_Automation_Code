@@ -516,15 +516,48 @@ class WaferNormalizationUnitTests(unittest.TestCase):
         self.assertTrue(pd.isna(normalized.iloc[5]))
         self.assertTrue(pd.isna(normalized.iloc[6]))
 
-        def test_supports_wafer_maps_excludes_packaged_and_q_files(self) -> None:
-            self.assertFalse(analysis._supports_wafer_maps("device_B11_sample.csv"))
-            self.assertFalse(analysis._supports_wafer_maps("device_HT_sample.csv"))
-            self.assertFalse(analysis._supports_wafer_maps("device_B21_sample.csv"))
-            self.assertFalse(analysis._supports_wafer_maps("device_RT_sample.csv"))
-            self.assertFalse(analysis._supports_wafer_maps("device_Q11_sample.csv"))
-            self.assertFalse(analysis._supports_wafer_maps("device_Q21_sample.csv"))
-            self.assertFalse(analysis._supports_wafer_maps("device_Q31_sample.csv"))
-            self.assertTrue(analysis._supports_wafer_maps("device_S21P_sample.csv"))
+    def test_prepare_wafer_map_frame_sorts_wafers_numerically_without_truncation(self) -> None:
+        values = pd.Series([1.0] * 7)
+        meta_cols = pd.DataFrame(
+            {
+                "X": [1, 1, 1, 1, 1, 1, 1],
+                "Y": [1, 2, 3, 4, 5, 6, 7],
+                "WAFER": ["7", "2", "10", "1", "6", "4", "3"],
+            }
+        )
+
+        _, wafers, _, _, warning_text = analysis._prepare_wafer_map_frame(values, meta_cols=meta_cols)
+
+        self.assertEqual(wafers, ["1", "2", "3", "4", "6", "7", "10"])
+        self.assertIsNone(warning_text)
+
+    def test_prepare_wafer_map_frame_warns_when_rows_have_missing_wafer_ids(self) -> None:
+        values = pd.Series([1.0, 2.0, 3.0])
+        meta_cols = pd.DataFrame(
+            {
+                "X": [1, 2, 3],
+                "Y": [1, 2, 3],
+                "WAFER": ["1", None, "2"],
+            }
+        )
+
+        _, wafers, _, _, warning_text = analysis._prepare_wafer_map_frame(values, meta_cols=meta_cols)
+
+        self.assertEqual(wafers, ["1", "2"])
+        self.assertEqual(
+            warning_text,
+            "Warning: 1 row(s) omitted from wafer panels because WAFER is missing.",
+        )
+
+    def test_supports_wafer_maps_excludes_packaged_and_q_files(self) -> None:
+        self.assertFalse(analysis._supports_wafer_maps("device_B11_sample.csv"))
+        self.assertFalse(analysis._supports_wafer_maps("device_HT_sample.csv"))
+        self.assertFalse(analysis._supports_wafer_maps("device_B21_sample.csv"))
+        self.assertFalse(analysis._supports_wafer_maps("device_RT_sample.csv"))
+        self.assertFalse(analysis._supports_wafer_maps("device_Q11_sample.csv"))
+        self.assertFalse(analysis._supports_wafer_maps("device_Q21_sample.csv"))
+        self.assertFalse(analysis._supports_wafer_maps("device_Q31_sample.csv"))
+        self.assertTrue(analysis._supports_wafer_maps("device_S21P_sample.csv"))
 
 class SheetNameUnitTests(unittest.TestCase):
     def test_unique_sheet_name_handles_truncation_collisions(self) -> None:

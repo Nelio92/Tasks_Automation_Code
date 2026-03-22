@@ -897,9 +897,9 @@ def _prepare_wafer_map_frame(values, *, meta_cols):
     import numpy as np
 
     if meta_cols is None:
-        return None, None, None, None
+        return None, None, None, None, None
     if not all(c in getattr(meta_cols, "columns", []) for c in ("X", "Y")):
-        return None, None, None, None
+        return None, None, None, None, None
 
     v = pd.to_numeric(values, errors="coerce")
     x = pd.to_numeric(meta_cols["X"], errors="coerce")
@@ -915,16 +915,23 @@ def _prepare_wafer_map_frame(values, *, meta_cols):
 
     df = df.dropna(subset=["v", "X", "Y"]).copy()
     if df.empty:
-        return None, None, None, None
+        return None, None, None, None, None
 
+    warning_text: str | None = None
     if "WAFER" in df.columns and df["WAFER"].notna().any():
-        counts = df.dropna(subset=["WAFER"]).groupby("WAFER")["v"].size().sort_values(ascending=False)
-        wafers = [str(w) for w in counts.index.tolist()]
+        distinct_wafers = sorted(
+            (str(w) for w in df["WAFER"].dropna().unique().tolist()),
+            key=lambda value: int(value) if str(value).isdigit() else str(value),
+        )
+        wafers = distinct_wafers
+        missing_wafer_rows = int(df["WAFER"].isna().sum())
+        if missing_wafer_rows:
+            warning_text = (
+                f"Warning: {missing_wafer_rows} row(s) omitted from wafer panels because WAFER is missing."
+            )
     else:
         wafers = ["ALL"]
         df["WAFER"] = "ALL"
-
-    wafers = wafers[:6]
     all_v = df["v"].to_numpy(dtype=float)
     vmin = float(np.nanpercentile(all_v, 1))
     vmax = float(np.nanpercentile(all_v, 99))
@@ -932,7 +939,7 @@ def _prepare_wafer_map_frame(values, *, meta_cols):
         vmin = float(np.nanmin(df["v"]))
         vmax = float(np.nanmax(df["v"]))
 
-    return df, wafers, vmin, vmax
+    return df, wafers, vmin, vmax, warning_text
 
 
 def _build_wafer_grid(d):
@@ -1030,12 +1037,16 @@ def _build_wafer_map_title(
     high_limit: float | None,
     unit: str | None,
     median_v: float | None,
+    warning_text: str | None = None,
 ) -> str:
     unit_txt = unit.strip() if isinstance(unit, str) and unit.strip() else "-"
     ltl_txt = _fmt_num(float(low_limit)) if low_limit is not None and math.isfinite(float(low_limit)) else "N/A"
     utl_txt = _fmt_num(float(high_limit)) if high_limit is not None and math.isfinite(float(high_limit)) else "N/A"
     median_txt = _fmt_num(float(median_v)) if median_v is not None and math.isfinite(float(median_v)) else "N/A"
-    return title + "\n" + f"LTL={ltl_txt}; UTL={utl_txt}; Unit={unit_txt}; median={median_txt}"
+    subtitle = f"LTL={ltl_txt}; UTL={utl_txt}; Unit={unit_txt}; median={median_txt}"
+    if warning_text:
+        return title + "\n" + subtitle + "\n" + warning_text
+    return title + "\n" + subtitle
 
 
 def _fmt_wafer_coordinate(value: float) -> str:
@@ -1097,7 +1108,7 @@ def _wafer_map_png(
     except Exception:
         return
 
-    df, wafers, vmin, vmax = _prepare_wafer_map_frame(values, meta_cols=meta_cols)
+    df, wafers, vmin, vmax, warning_text = _prepare_wafer_map_frame(values, meta_cols=meta_cols)
     if df is None or wafers is None:
         return
 
@@ -1278,6 +1289,7 @@ def _wafer_map_png(
             high_limit=high_limit,
             unit=unit,
             median_v=median_v,
+            warning_text=warning_text,
         ),
         fontsize=10 * wafermap_scale,
     )

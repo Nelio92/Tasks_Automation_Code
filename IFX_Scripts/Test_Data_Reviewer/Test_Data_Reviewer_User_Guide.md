@@ -296,7 +296,76 @@ Only tests whose module prefix is listed in `modules` are evaluated.
 
 ---
 
-## 11) Troubleshooting
+## 11) Key Metric Criteria
+
+This section summarizes the 7 key metrics used by the reviewer to flag tests with possible issues.
+
+### Plain-language explanation
+
+1. `Fails`
+- triggered when the test yield is below `yield_threshold`
+- this means at least some measured values fall outside `Low` and `High` limits
+
+2. `Cpk<...`
+- triggered when the reported capability is below `cpk_low`
+- this means the distribution is too close to one or both spec limits
+
+3. `Cpk>...`
+- triggered when the reported capability is above `cpk_high`
+- this is treated as suspicious because an extremely tight distribution can indicate quantization, clipping, stale data, or scaling issues
+
+4. `Site-to-Site Delta`
+- triggered when different tester sites show a statistically meaningful shift compared with the within-site spread
+- this often points to site mismatch, setup differences, or hardware path issues
+
+5. `Unique Values`
+- triggered for analog-like tests when too few distinct measurement values are observed
+- this often points to quantization, clipping, frozen data, or limited measurement resolution
+
+6. `Skewness`
+- triggered when the distribution is strongly asymmetric
+- this often points to one-sided drift, clipping, long tails, or a marginal subgroup
+
+7. `Multimodality`
+- triggered when the data appears to contain more than one meaningful peak or population
+- this often points to mixed sites, mixed wafers, mixed modes, or multiple real silicon populations
+
+### Formula and threshold summary
+
+| Metric | Mathematical criterion | Threshold used | Interpretation |
+|---|---|---|---|
+| `Fails` | `Yield = 100 * passed / total` | `Yield < yield_threshold` | At least some units fail limits |
+| `Cpk<...` | `Cpk = min((UTL-mean)/(3*sigma), (mean-LTL)/(3*sigma))` | `Cpk < cpk_low` | Capability too low |
+| `Cpk>...` | same Cpk formula | `Cpk > cpk_high` | Capability suspiciously high |
+| `Site-to-Site Delta` | compares site medians against global median using robust within-site sigma | effectively flagged when site shift is large enough to be meaningful | Site mismatch or setup problem |
+| `Unique Values` | count distinct rounded numeric values | checked only for analog-like units with at least 20 samples | Too few distinct values for an analog test |
+| `Skewness` | `skew = m3 / m2^(3/2)` | `abs(skew) >= 1.0` | Strong asymmetry |
+| `Multimodality` | multiple meaningful peaks in discrete levels or smoothed histogram | heuristic peak detection | Mixed populations or modes |
+
+### Implementation notes
+
+- `Unique Values` and `Skewness` are evaluated only for analog-like units
+- `Unique Values` is only checked when there are at least 20 valid samples
+- `Site-to-Site Delta` needs at least 2 sites and at least 5 samples per site
+- `Multimodality` is heuristic and not a formal Gaussian-mixture fit
+- severity priorities are:
+  - High: `Fails`, `Cpk<...`
+  - Medium: `Cpk>...`, `Site-to-Site Delta`, `Multimodality`
+  - Low: `Unique Values`, `Skewness`
+
+### Slide-ready summary
+
+- `Fails`: yield below threshold because one or more units violate the test limits
+- `Cpk<...`: capability too low, so the test distribution is too close to the spec limits
+- `Cpk>...`: capability suspiciously high, which can indicate clipping, quantization, or frozen data
+- `Site-to-Site Delta`: site medians are significantly shifted relative to the within-site spread
+- `Unique Values`: analog test shows too few distinct values, suggesting coarse resolution or stuck data
+- `Skewness`: distribution is strongly asymmetric, suggesting one-sided drift or long tails
+- `Multimodality`: data contains multiple meaningful peaks, suggesting mixed populations, sites, or modes
+
+---
+
+## 12) Troubleshooting
 
 ### Nothing happens or the run exits early
 - first run a dry-run:
@@ -335,7 +404,7 @@ Only tests whose module prefix is listed in `modules` are evaluated.
 
 ---
 
-## 12) Recommended way to use this release
+## 13) Recommended way to use this release
 
 For normal users:
 - do not edit the executable
@@ -352,7 +421,7 @@ Recommended pattern:
 
 ---
 
-## 13) Example commands
+## 14) Example commands
 
 ### Default run
 
@@ -380,7 +449,7 @@ C:\path\to\release_pyinstaller\TestDataReviewer.exe --config C:\path\to\release_
 
 ---
 
-## 14) Support note
+## 15) Support note
 
 If the tool fails even after a dry-run check, provide these items when asking for support:
 - the exact command used
