@@ -70,7 +70,7 @@ SINGLE_FILE: str | None = None
 ENCODING: str | None = None
 
 # Optional correlation workbook
-GENERATE_CORRELATION_REPORT: bool | None = None
+GENERATE_CORRELATION_REPORT = False
 CORRELATION_METHODS: list[Literal["pearson", "spearman"]] = []
 PEARSON_ABS_MIN_FOR_REPORT: float | None = None
 
@@ -98,8 +98,6 @@ def _require_runtime_configuration() -> dict[str, Any]:
         missing.append("OUTLIER_MAD_MULTIPLIER")
     if ENCODING is None:
         missing.append("ENCODING")
-    if GENERATE_CORRELATION_REPORT is None:
-        missing.append("GENERATE_CORRELATION_REPORT")
     if PEARSON_ABS_MIN_FOR_REPORT is None:
         missing.append("PEARSON_ABS_MIN_FOR_REPORT")
     if WAFERMAP_CIRCLE_AREA_MULT is None:

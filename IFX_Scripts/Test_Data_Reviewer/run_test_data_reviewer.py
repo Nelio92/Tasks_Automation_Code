@@ -34,6 +34,7 @@ DEVELOPER_DEFAULTS = {
     "max_files": None,
     "single_file": None,
     "encoding": analysis.DEFAULT_ENCODING,
+    "generate_correlation_report": False,
     "correlation_methods": ["pearson", "spearman"],
     "pearson_abs_min_for_report": 0.8,
     "wafermap_circle_area_mult": 1.0,
@@ -47,7 +48,6 @@ OPTIONAL_CONFIG_KEYS = {
     "max_files",
     "single_file",
     "encoding",
-    "generate_correlation_report",
     "correlation_methods",
     "pearson_abs_min_for_report",
     "wafermap_circle_area_mult",
@@ -310,13 +310,6 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
             else:
                 normalized["stdf_file_patterns"] = patterns
 
-    if "generate_correlation_report" in config:
-        value = config["generate_correlation_report"]
-        if not isinstance(value, bool):
-            errors.append("generate_correlation_report must be true or false")
-        else:
-            normalized["generate_correlation_report"] = value
-
     if "correlation_methods" in config:
         value = config["correlation_methods"]
         if not _is_sequence_but_not_string(value):
@@ -328,7 +321,7 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
                 errors.append(
                     "correlation_methods contains unsupported value(s): " + ", ".join(invalid_methods)
                 )
-            elif "generate_correlation_report" in normalized and normalized["generate_correlation_report"] and not methods:
+            elif bool(DEVELOPER_DEFAULTS["generate_correlation_report"]) and not methods:
                 errors.append("correlation_methods must contain at least one method when generate_correlation_report is true")
             else:
                 normalized["correlation_methods"] = methods
@@ -337,6 +330,7 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
     normalized.setdefault("max_files", DEVELOPER_DEFAULTS["max_files"])
     normalized.setdefault("single_file", DEVELOPER_DEFAULTS["single_file"])
     normalized.setdefault("encoding", str(DEVELOPER_DEFAULTS["encoding"]))
+    normalized.setdefault("generate_correlation_report", bool(DEVELOPER_DEFAULTS["generate_correlation_report"]))
     normalized.setdefault("correlation_methods", list(DEVELOPER_DEFAULTS["correlation_methods"]))
     normalized.setdefault("pearson_abs_min_for_report", float(DEVELOPER_DEFAULTS["pearson_abs_min_for_report"]))
     normalized.setdefault("wafermap_circle_area_mult", float(DEVELOPER_DEFAULTS["wafermap_circle_area_mult"]))
@@ -379,8 +373,7 @@ def _apply_config(config: dict[str, Any]) -> None:
     value = config["single_file"]
     analysis.SINGLE_FILE = None if value in (None, "", "null") else str(value)
     analysis.ENCODING = str(config["encoding"])
-    if "generate_correlation_report" in config:
-        analysis.GENERATE_CORRELATION_REPORT = bool(config["generate_correlation_report"])
+    analysis.GENERATE_CORRELATION_REPORT = bool(config["generate_correlation_report"])
     methods = [str(item).strip().lower() for item in list(config["correlation_methods"]) if str(item).strip()]
     analysis.CORRELATION_METHODS = [m for m in methods if m in {"pearson", "spearman"}]
     analysis.PEARSON_ABS_MIN_FOR_REPORT = float(config["pearson_abs_min_for_report"])

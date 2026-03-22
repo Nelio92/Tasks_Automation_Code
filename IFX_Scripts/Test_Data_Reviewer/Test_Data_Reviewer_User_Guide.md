@@ -261,7 +261,7 @@ You normally only need to edit a few YAML fields.
 Default source discovery supports `.std`, `.stdf`, `.eff`, compressed variants, and `.tar.gz` packages containing a supported source file.
 
 ### Correlation report
-- `generate_correlation_report`
+- correlation report generation is controlled by developers in the source files
 
 ---
 
@@ -325,9 +325,8 @@ Only tests whose module prefix is listed in `modules` are evaluated.
 - close the workbook and run again
 - if needed, use a different `output_folder`
 
-### Plots or correlation report are missing
-- check whether the corresponding feature is enabled by the config
-- correlation report is only created if `generate_correlation_report: true`
+### Correlation report is missing
+- correlation report generation is a developer-only source setting and is not controlled from the YAML config
 
 ### STDF conversion did not run
 - check `convert_stdf_before_analysis`

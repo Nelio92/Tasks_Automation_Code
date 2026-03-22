@@ -45,7 +45,6 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                     yield_threshold: 100.0
                     cpk_low: 1.67
                     cpk_high: 20.0
-                    generate_correlation_report: true
                     """
                 ),
                 encoding="utf-8",
@@ -70,15 +69,13 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
             )
             self.assertIn("[Yield files]", result.stdout)
             self.assertIn("[Yield tests]", result.stdout)
-            self.assertIn("[Corr files]", result.stdout)
-            self.assertIn("[Corr tests]", result.stdout)
             self.assertIn("[Workflow]", result.stdout)
             self.assertIn("100%", result.stdout)
 
             yield_report = output_dir / "Test_Data_Reviewer_Report.xlsx"
             correlation_report = output_dir / "Correlation_Report.xlsx"
             self.assertTrue(yield_report.exists(), "Yield/Cpk report was not created")
-            self.assertTrue(correlation_report.exists(), "Correlation report was not created")
+            self.assertFalse(correlation_report.exists(), "Correlation report should remain developer-only by default")
 
             png_files = list((output_dir / "cdf_plots").rglob("*.png"))
             self.assertGreaterEqual(len(png_files), 2, "Expected CDF and wafer map PNG outputs")
@@ -254,16 +251,6 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                     click_count += len(drawing_root.findall(f".//{{{drawing_ns}}}hlinkClick"))
 
                 self.assertGreaterEqual(click_count, 2, "Expected embedded plot images to have click hyperlinks")
-
-            corr_workbook = load_workbook(correlation_report, read_only=True, data_only=True)
-            try:
-                self.assertIn(SAMPLE_SHEET_NAME, corr_workbook.sheetnames)
-                corr_sheet = corr_workbook[SAMPLE_SHEET_NAME]
-                corr_rows = list(corr_sheet.iter_rows(min_row=2, values_only=True))
-                self.assertGreaterEqual(len(corr_rows), 2, "Expected correlation rows in smoke report")
-            finally:
-                corr_workbook.close()
-
 
 if __name__ == "__main__":
     unittest.main()

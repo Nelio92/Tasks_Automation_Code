@@ -13,4 +13,3 @@ modules:
 yield_threshold: 100.0
 cpk_low: 1.67
 cpk_high: 20.0
-generate_correlation_report: false
