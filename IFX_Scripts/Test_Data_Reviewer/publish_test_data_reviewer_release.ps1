@@ -167,7 +167,7 @@ try {
 
     git -C $cloneDir config user.name $GitUserName
     git -C $cloneDir config user.email $GitUserEmail
-    git -C $cloneDir add --all
+    git -C $cloneDir add --all --force
 
     $hasChanges = $true
     try {
