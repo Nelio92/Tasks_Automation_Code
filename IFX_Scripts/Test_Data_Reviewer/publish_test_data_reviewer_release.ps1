@@ -2,12 +2,15 @@ param(
     [string]$Version,
     [string]$ReleaseDir = "release_pyinstaller",
     [string]$PackageDir = "release_packages",
-    [string]$GitLabProjectUrl = $(if ($env:TDR_GITLAB_PROJECT_URL) { $env:TDR_GITLAB_PROJECT_URL } else { $env:TDR_TEAM_REPO_URL }),
-    [string]$GitLabToken = $(if ($env:TDR_GITLAB_TOKEN) { $env:TDR_GITLAB_TOKEN } else { $env:TDR_TEAM_REPO_TOKEN }),
-    [string]$GenericPackageName = $(if ($env:TDR_GITLAB_PACKAGE_NAME) { $env:TDR_GITLAB_PACKAGE_NAME } else { "test-data-reviewer" }),
-    [string]$LatestVersionLabel = $(if ($env:TDR_GITLAB_LATEST_LABEL) { $env:TDR_GITLAB_LATEST_LABEL } else { "latest" }),
+    [string]$TeamRepoUrl = $(if ($env:TDR_TEAM_REPO_URL) { $env:TDR_TEAM_REPO_URL } else { $env:TDR_GITLAB_PROJECT_URL }),
+    [string]$TeamRepoBranch = $(if ($env:TDR_TEAM_REPO_BRANCH) { $env:TDR_TEAM_REPO_BRANCH } else { "main" }),
+    [string]$TeamRepoSubdir = $(if ($env:TDR_TEAM_REPO_SUBDIR) { $env:TDR_TEAM_REPO_SUBDIR } else { "TestDataReviewer" }),
+    [string]$TeamRepoToken = $(if ($env:TDR_TEAM_REPO_TOKEN) { $env:TDR_TEAM_REPO_TOKEN } else { $env:TDR_GITLAB_TOKEN }),
+    [string]$TeamRepoUsername = $(if ($env:TDR_TEAM_REPO_USERNAME) { $env:TDR_TEAM_REPO_USERNAME } else { "oauth2" }),
+    [string]$GitUserName = $(if ($env:TDR_RELEASE_GIT_USER_NAME) { $env:TDR_RELEASE_GIT_USER_NAME } else { "Wandji Lionel Wilfried (PSS RF D RAD PTE TE4)" }),
+    [string]$GitUserEmail = $(if ($env:TDR_RELEASE_GIT_USER_EMAIL) { $env:TDR_RELEASE_GIT_USER_EMAIL } else { "LionelWilfried.Wandji@infineon.com" }),
     [switch]$SkipBuild,
-    [switch]$NoUpload
+    [switch]$NoPush
 )
 
 Set-StrictMode -Version Latest
@@ -47,43 +50,25 @@ function Get-ReleaseVersion {
     return "draft-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$shortSha"
 }
 
-function Get-GitLabProjectPath {
+function Get-AuthenticatedRepoUrl {
     param(
-        [string]$ProjectUrl
+        [string]$RepoUrl,
+        [string]$Token,
+        [string]$Username
     )
 
-    $uri = [System.Uri]$ProjectUrl
-    $projectPath = $uri.AbsolutePath.Trim('/')
-    if ($projectPath.EndsWith('.git', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $projectPath = $projectPath.Substring(0, $projectPath.Length - 4)
+    if (-not $Token) {
+        return $RepoUrl
     }
-    if (-not $projectPath) {
-        throw "Could not derive GitLab project path from $ProjectUrl"
+    if (-not $RepoUrl.StartsWith("https://", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Authenticated publishing currently supports only https repository URLs"
     }
-    return $projectPath
-}
 
-function Get-GitLabApiBaseUrl {
-    param(
-        [string]$ProjectUrl
-    )
-
-    $uri = [System.Uri]$ProjectUrl
-    return ($uri.GetLeftPart([System.UriPartial]::Authority).TrimEnd('/') + "/api/v4")
-}
-
-function Assert-GitLabHostResolvable {
-    param(
-        [string]$ProjectUrl
-    )
-
-    $uri = [System.Uri]$ProjectUrl
-    try {
-        [System.Net.Dns]::GetHostEntry($uri.Host) | Out-Null
-    }
-    catch {
-        throw "GitLab host '$($uri.Host)' is not resolvable from this runner. If this is an internal-only GitLab instance, use a self-hosted GitHub Actions runner on the corporate network or run publish_test_data_reviewer_release.ps1 locally from a machine that can reach it."
-    }
+    $uri = [System.Uri]$RepoUrl
+    $builder = [System.UriBuilder]::new($uri)
+    $builder.UserName = [System.Uri]::EscapeDataString($Username)
+    $builder.Password = [System.Uri]::EscapeDataString($Token)
+    return $builder.Uri.AbsoluteUri
 }
 
 function Write-ReleaseMetadata {
@@ -95,39 +80,35 @@ function Write-ReleaseMetadata {
     $Metadata | ConvertTo-Json -Depth 6 | Set-Content -Path $MetadataPath -Encoding UTF8
 }
 
-function Upload-GitLabGenericPackageFile {
+function Copy-ReleaseArtifacts {
     param(
-        [string]$ProjectUrl,
-        [string]$Token,
-        [string]$PackageName,
-        [string]$PackageVersion,
-        [string]$FilePath,
-        [string]$FileName
+        [string]$SourceZipPath,
+        [string]$SourceHashPath,
+        [string]$SourceMetadataPath,
+        [string]$ReleaseVersion,
+        [string]$RepoPublishRoot
     )
 
-    if (-not $ProjectUrl) {
-        throw "GitLab project URL is required for package-registry upload"
-    }
-    if (-not $Token) {
-        throw "GitLab token is required for package-registry upload"
-    }
+    $zipFileName = Split-Path -Leaf $SourceZipPath
+    $versionDir = Join-Path $RepoPublishRoot (Join-Path "releases" $ReleaseVersion)
+    $latestDir = Join-Path $RepoPublishRoot "latest"
+    New-Item -ItemType Directory -Force -Path $versionDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $latestDir | Out-Null
 
-    $projectPath = Get-GitLabProjectPath -ProjectUrl $ProjectUrl
-    $apiBaseUrl = Get-GitLabApiBaseUrl -ProjectUrl $ProjectUrl
-    $encodedProject = [System.Uri]::EscapeDataString($projectPath)
-    $encodedPackage = [System.Uri]::EscapeDataString($PackageName)
-    $encodedVersion = [System.Uri]::EscapeDataString($PackageVersion)
-    $encodedFileName = [System.Uri]::EscapeDataString($FileName)
-    $uploadUrl = "$apiBaseUrl/projects/$encodedProject/packages/generic/$encodedPackage/$encodedVersion/$encodedFileName"
+    Copy-Item $SourceZipPath (Join-Path $versionDir $zipFileName) -Force
+    Copy-Item $SourceHashPath (Join-Path $versionDir "$zipFileName.sha256.txt") -Force
+    Copy-Item $SourceMetadataPath (Join-Path $versionDir "release-metadata.json") -Force
 
-    Invoke-WebRequest `
-        -Uri $uploadUrl `
-        -Method Put `
-        -Headers @{ "PRIVATE-TOKEN" = $Token } `
-        -InFile $FilePath `
-        -ContentType "application/octet-stream" | Out-Null
+    $latestZipName = "TestDataReviewer-latest.zip"
+    $latestHashLine = (Get-Content $SourceHashPath -Raw) -replace [regex]::Escape($zipFileName), $latestZipName
+    $latestHashLine | Set-Content -Path (Join-Path $latestDir "TestDataReviewer-latest.sha256.txt") -Encoding ASCII
 
-    return $uploadUrl
+    $latestMetadata = Get-Content $SourceMetadataPath -Raw | ConvertFrom-Json
+    $latestMetadata.zipFile = $latestZipName
+    $latestMetadata | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $latestDir "release-metadata.json") -Encoding UTF8
+
+    Copy-Item $SourceZipPath (Join-Path $latestDir $latestZipName) -Force
+    $ReleaseVersion | Set-Content -Path (Join-Path $latestDir "LATEST_VERSION.txt") -Encoding ASCII
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -176,44 +157,50 @@ Write-ReleaseMetadata -MetadataPath $metadataPath -Metadata $metadata
 Write-Host "Release package created: $zipPath"
 Write-Host "SHA256 file created:  $hashPath"
 
-if (-not $GitLabProjectUrl) {
-    Write-Warning "No GitLab project URL provided. Skipping package-registry upload step."
+if (-not $TeamRepoUrl) {
+    Write-Warning "No team repository URL provided. Skipping team-repo publish step."
     exit 0
 }
 
-if ($NoUpload) {
-    Write-Host "Skipping package-registry upload because -NoUpload was set."
+if ($NoPush) {
+    Write-Host "Skipping team-repo publish because -NoPush was set."
     exit 0
 }
 
-Assert-GitLabHostResolvable -ProjectUrl $GitLabProjectUrl
+$authenticatedRepoUrl = Get-AuthenticatedRepoUrl -RepoUrl $TeamRepoUrl -Token $TeamRepoToken -Username $TeamRepoUsername
+$tempCloneRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("tdr-team-release-" + [System.Guid]::NewGuid().ToString("N"))
+$cloneDir = Join-Path $tempCloneRoot "team-repo"
+New-Item -ItemType Directory -Force -Path $tempCloneRoot | Out-Null
 
-$versionUploadUrls = @{}
-$versionUploadUrls[$zipFileName] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $releaseVersion -FilePath $zipPath -FileName $zipFileName
-$versionUploadUrls["$zipFileName.sha256.txt"] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $releaseVersion -FilePath $hashPath -FileName "$zipFileName.sha256.txt"
-$versionUploadUrls["release-metadata.json"] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $releaseVersion -FilePath $metadataPath -FileName "release-metadata.json"
+try {
+    git clone --depth 1 --branch $TeamRepoBranch $authenticatedRepoUrl $cloneDir | Out-Null
+    $repoPublishRoot = Join-Path $cloneDir $TeamRepoSubdir
+    Copy-ReleaseArtifacts -SourceZipPath $zipPath -SourceHashPath $hashPath -SourceMetadataPath $metadataPath -ReleaseVersion $releaseVersion -RepoPublishRoot $repoPublishRoot
 
-$latestZipName = "TestDataReviewer-latest.zip"
-$latestHashPath = Join-Path $versionPackageDir "TestDataReviewer-latest.sha256.txt"
-$latestMetadataPath = Join-Path $versionPackageDir "release-metadata-latest.json"
-$latestVersionPath = Join-Path $versionPackageDir "LATEST_VERSION.txt"
-"SHA256  $latestZipName  $hash" | Set-Content -Path $latestHashPath -Encoding ASCII
-$metadataWithLatest = @{}
-foreach ($key in $metadata.Keys) {
-    $metadataWithLatest[$key] = $metadata[$key]
+    git -C $cloneDir config user.name $GitUserName
+    git -C $cloneDir config user.email $GitUserEmail
+    git -C $cloneDir add --all
+
+    $hasChanges = $true
+    try {
+        git -C $cloneDir diff --cached --quiet
+        $hasChanges = $false
+    }
+    catch {
+        $hasChanges = $true
+    }
+
+    if (-not $hasChanges) {
+        Write-Host "Team repository already up to date for $releaseVersion"
+        exit 0
+    }
+
+    git -C $cloneDir commit -m "Publish TestDataReviewer $releaseVersion" | Out-Null
+    git -C $cloneDir push origin $TeamRepoBranch | Out-Null
+    Write-Host "Published TestDataReviewer $releaseVersion to team repository branch $TeamRepoBranch"
 }
-$metadataWithLatest["latestLabel"] = $LatestVersionLabel
-$metadataWithLatest["publishedVersion"] = $releaseVersion
-Write-ReleaseMetadata -MetadataPath $latestMetadataPath -Metadata $metadataWithLatest
-$releaseVersion | Set-Content -Path $latestVersionPath -Encoding ASCII
-
-$latestUploadUrls = @{}
-$latestUploadUrls[$latestZipName] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $LatestVersionLabel -FilePath $zipPath -FileName $latestZipName
-$latestUploadUrls["TestDataReviewer-latest.sha256.txt"] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $LatestVersionLabel -FilePath $latestHashPath -FileName "TestDataReviewer-latest.sha256.txt"
-$latestUploadUrls["release-metadata.json"] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $LatestVersionLabel -FilePath $latestMetadataPath -FileName "release-metadata.json"
-$latestUploadUrls["LATEST_VERSION.txt"] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $LatestVersionLabel -FilePath $latestVersionPath -FileName "LATEST_VERSION.txt"
-
-Write-Host "Uploaded release package to GitLab Generic Package Registry"
-Write-Host "Package name: $GenericPackageName"
-Write-Host "Versioned package: $releaseVersion"
-Write-Host "Latest label: $LatestVersionLabel"
+finally {
+    if (Test-Path $tempCloneRoot) {
+        Remove-Item -Path $tempCloneRoot -Recurse -Force
+    }
+}

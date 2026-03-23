@@ -7,25 +7,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version to publish, for example v1.0.0
+        description: Release version to package, for example v1.0.0
         required: true
         type: string
-      upload_to_package_registry:
-        description: Upload the generated release package to the GitLab package registry
-        required: true
-        default: true
-        type: boolean
   push:
     tags:
       - tdr-v*
 
 jobs:
   publish:
-    runs-on:
-      - self-hosted
-      - Windows
-      - X64
-      - infineon-intra
+    runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
@@ -46,12 +37,7 @@ jobs:
         run: |
           python -m venv ../../../.venv
 
-      - name: Publish release package
-        env:
-          TDR_GITLAB_PROJECT_URL: ${{ secrets.TDR_GITLAB_PROJECT_URL }}
-          TDR_GITLAB_TOKEN: ${{ secrets.TDR_GITLAB_TOKEN }}
-          TDR_GITLAB_PACKAGE_NAME: ${{ vars.TDR_GITLAB_PACKAGE_NAME }}
-          TDR_GITLAB_LATEST_LABEL: ${{ vars.TDR_GITLAB_LATEST_LABEL }}
+      - name: Build release package
         run: |
           $version = '${{ github.event.inputs.version }}'
           if (-not $version) {
@@ -61,9 +47,4 @@ jobs:
             $version = $version.Substring(4)
           }
 
-          if ('${{ github.event.inputs.upload_to_package_registry }}' -eq 'false') {
-            ./publish_test_data_reviewer_release.ps1 -Version $version -NoUpload
-          }
-          else {
-            ./publish_test_data_reviewer_release.ps1 -Version $version
-          }
+          ./publish_test_data_reviewer_release.ps1 -Version $version -NoPush
