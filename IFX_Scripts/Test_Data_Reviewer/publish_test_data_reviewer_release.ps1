@@ -165,9 +165,16 @@ try {
     $repoPublishRoot = Join-Path $cloneDir $TeamRepoSubdir
     Copy-ReleaseArtifacts -SourceZipPath $zipPath -ReleaseVersion $releaseVersion -RepoPublishRoot $repoPublishRoot
 
+    Write-Host "Team repo clone:   $cloneDir"
+    Write-Host "Publish root:      $repoPublishRoot"
+    Write-Host "Versioned zip path: $(Join-Path $repoPublishRoot (Join-Path ('releases/' + $releaseVersion) $zipFileName))"
+    Write-Host "Latest zip path:    $(Join-Path $repoPublishRoot 'latest/TestDataReviewer-latest.zip')"
+
     git -C $cloneDir config user.name $GitUserName
     git -C $cloneDir config user.email $GitUserEmail
     git -C $cloneDir add --all --force
+    Write-Host "Git status after staging:"
+    git -C $cloneDir status --short --ignored
 
     $hasChanges = $true
     try {
