@@ -83,8 +83,6 @@ function Write-ReleaseMetadata {
 function Copy-ReleaseArtifacts {
     param(
         [string]$SourceZipPath,
-        [string]$SourceHashPath,
-        [string]$SourceMetadataPath,
         [string]$ReleaseVersion,
         [string]$RepoPublishRoot
     )
@@ -96,19 +94,9 @@ function Copy-ReleaseArtifacts {
     New-Item -ItemType Directory -Force -Path $latestDir | Out-Null
 
     Copy-Item $SourceZipPath (Join-Path $versionDir $zipFileName) -Force
-    Copy-Item $SourceHashPath (Join-Path $versionDir "$zipFileName.sha256.txt") -Force
-    Copy-Item $SourceMetadataPath (Join-Path $versionDir "release-metadata.json") -Force
 
     $latestZipName = "TestDataReviewer-latest.zip"
-    $latestHashLine = (Get-Content $SourceHashPath -Raw) -replace [regex]::Escape($zipFileName), $latestZipName
-    $latestHashLine | Set-Content -Path (Join-Path $latestDir "TestDataReviewer-latest.sha256.txt") -Encoding ASCII
-
-    $latestMetadata = Get-Content $SourceMetadataPath -Raw | ConvertFrom-Json
-    $latestMetadata.zipFile = $latestZipName
-    $latestMetadata | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $latestDir "release-metadata.json") -Encoding UTF8
-
     Copy-Item $SourceZipPath (Join-Path $latestDir $latestZipName) -Force
-    $ReleaseVersion | Set-Content -Path (Join-Path $latestDir "LATEST_VERSION.txt") -Encoding ASCII
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -175,7 +163,7 @@ New-Item -ItemType Directory -Force -Path $tempCloneRoot | Out-Null
 try {
     git clone --depth 1 --branch $TeamRepoBranch $authenticatedRepoUrl $cloneDir | Out-Null
     $repoPublishRoot = Join-Path $cloneDir $TeamRepoSubdir
-    Copy-ReleaseArtifacts -SourceZipPath $zipPath -SourceHashPath $hashPath -SourceMetadataPath $metadataPath -ReleaseVersion $releaseVersion -RepoPublishRoot $repoPublishRoot
+    Copy-ReleaseArtifacts -SourceZipPath $zipPath -ReleaseVersion $releaseVersion -RepoPublishRoot $repoPublishRoot
 
     git -C $cloneDir config user.name $GitUserName
     git -C $cloneDir config user.email $GitUserEmail

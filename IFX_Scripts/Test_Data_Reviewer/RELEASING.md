@@ -1,18 +1,17 @@
 # Test Data Reviewer - Release Publishing
 
-This project now supports a simple release flow that packages `release_pyinstaller` into a zip file and publishes it into a separate GitLab repository that the team can browse directly.
+This project now supports a simple release flow that packages `release_pyinstaller` into a zip file and publishes only zip files into a separate GitLab repository that the team can browse directly.
 
 ## Release model
 
 - Source code stays in this private GitHub repository.
 - Team delivery happens through versioned zip artifacts committed into the team-facing GitLab repository.
+- No Python source files, build scripts, requirements files, or other source assets are published to the GitLab repo.
 - Each published version contains:
   - `TestDataReviewer-<version>.zip`
-  - SHA256 checksum file
-  - release metadata JSON
 - The team repository is updated in two places:
-  - `TestDataReviewer/releases/<version>/...`
-  - `TestDataReviewer/latest/...`
+  - `TestDataReviewer/releases/<version>/TestDataReviewer-<version>.zip`
+  - `TestDataReviewer/latest/TestDataReviewer-latest.zip`
 
 ## Local publishing
 
@@ -24,12 +23,14 @@ Run from `IFX_Scripts/Test_Data_Reviewer`:
 
 This is the recommended path for the official team release because your local machine can already reach the internal GitLab host.
 
+The GitLab repo receives only the zipped release artifacts. The source code remains only in the private GitHub repository.
+
 Optional parameters:
 
 - `-SkipBuild`
   - reuse the existing `release_pyinstaller` folder
 - `-NoPush`
-  - build the zip and metadata locally without pushing to the team GitLab repo
+  - build the zip locally without pushing to the team GitLab repo
 - `-TeamRepoBranch main`
 - `-TeamRepoSubdir TestDataReviewer`
 
