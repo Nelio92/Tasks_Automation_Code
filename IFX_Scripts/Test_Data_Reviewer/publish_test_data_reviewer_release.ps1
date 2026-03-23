@@ -176,14 +176,8 @@ try {
     Write-Host "Git status after staging:"
     git -C $cloneDir status --short --ignored
 
-    $hasChanges = $true
-    try {
-        git -C $cloneDir diff --cached --quiet
-        $hasChanges = $false
-    }
-    catch {
-        $hasChanges = $true
-    }
+    $stagedChanges = git -C $cloneDir diff --cached --name-only
+    $hasChanges = -not [string]::IsNullOrWhiteSpace(($stagedChanges | Out-String))
 
     if (-not $hasChanges) {
         Write-Host "Team repository already up to date for $releaseVersion"
