@@ -72,6 +72,20 @@ function Get-GitLabApiBaseUrl {
     return ($uri.GetLeftPart([System.UriPartial]::Authority).TrimEnd('/') + "/api/v4")
 }
 
+function Assert-GitLabHostResolvable {
+    param(
+        [string]$ProjectUrl
+    )
+
+    $uri = [System.Uri]$ProjectUrl
+    try {
+        [System.Net.Dns]::GetHostEntry($uri.Host) | Out-Null
+    }
+    catch {
+        throw "GitLab host '$($uri.Host)' is not resolvable from this runner. If this is an internal-only GitLab instance, use a self-hosted GitHub Actions runner on the corporate network or run publish_test_data_reviewer_release.ps1 locally from a machine that can reach it."
+    }
+}
+
 function Write-ReleaseMetadata {
     param(
         [string]$MetadataPath,
@@ -171,6 +185,8 @@ if ($NoUpload) {
     Write-Host "Skipping package-registry upload because -NoUpload was set."
     exit 0
 }
+
+Assert-GitLabHostResolvable -ProjectUrl $GitLabProjectUrl
 
 $versionUploadUrls = @{}
 $versionUploadUrls[$zipFileName] = Upload-GitLabGenericPackageFile -ProjectUrl $GitLabProjectUrl -Token $GitLabToken -PackageName $GenericPackageName -PackageVersion $releaseVersion -FilePath $zipPath -FileName $zipFileName

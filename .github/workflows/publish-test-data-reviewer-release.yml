@@ -57,9 +57,9 @@ jobs:
             $version = $version.Substring(4)
           }
 
-          $args = @('-Version', $version)
           if ('${{ github.event.inputs.upload_to_package_registry }}' -eq 'false') {
-            $args += '-NoUpload'
+            ./publish_test_data_reviewer_release.ps1 -Version $version -NoUpload
           }
-
-          ./publish_test_data_reviewer_release.ps1 @args
+          else {
+            ./publish_test_data_reviewer_release.ps1 -Version $version
+          }
