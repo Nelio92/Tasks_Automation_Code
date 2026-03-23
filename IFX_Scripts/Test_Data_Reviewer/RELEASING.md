@@ -68,6 +68,31 @@ $env:TDR_RELEASE_GIT_USER_EMAIL = "LionelWilfried.Wandji@infineon.com"
 ./publish_test_data_reviewer_release.ps1 -Version v1.0.0
 ```
 
+## Simpler interactive wrapper
+
+If you do not want to type or export the environment variables manually each time, use:
+
+```powershell
+./publish_test_data_reviewer_release_interactive.ps1
+```
+
+The wrapper prompts you for:
+
+- release version
+- GitLab repo URL
+- GitLab username
+- commit author name
+- commit author email
+- GitLab personal access token
+
+It then calls `publish_test_data_reviewer_release.ps1` for you.
+
+If you already built the release and want to reuse it:
+
+```powershell
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.0 -SkipBuild
+```
+
 ## GitHub Actions automation
 
 The workflow file is:
