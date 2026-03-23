@@ -21,7 +21,11 @@ on:
 
 jobs:
   publish:
-    runs-on: windows-latest
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - infineon-intra
     defaults:
       run:
         shell: pwsh
