@@ -1,0 +1,62 @@
+name: Publish Test Data Reviewer Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to publish, for example v1.0.0
+        required: true
+        type: string
+      upload_to_package_registry:
+        description: Upload the generated release package to the GitLab package registry
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - tdr-v*
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: IFX_Scripts/Test_Data_Reviewer
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Create repository virtual environment
+        run: |
+          python -m venv ../../.venv
+
+      - name: Publish release package
+        env:
+          TDR_GITLAB_PROJECT_URL: ${{ secrets.TDR_GITLAB_PROJECT_URL }}
+          TDR_GITLAB_TOKEN: ${{ secrets.TDR_GITLAB_TOKEN }}
+          TDR_GITLAB_PACKAGE_NAME: ${{ vars.TDR_GITLAB_PACKAGE_NAME }}
+          TDR_GITLAB_LATEST_LABEL: ${{ vars.TDR_GITLAB_LATEST_LABEL }}
+        run: |
+          $version = '${{ github.event.inputs.version }}'
+          if (-not $version) {
+            $version = '${{ github.ref_name }}'
+          }
+          if ($version.StartsWith('tdr-')) {
+            $version = $version.Substring(4)
+          }
+
+          $args = @('-Version', $version)
+          if ('${{ github.event.inputs.upload_to_package_registry }}' -eq 'false') {
+            $args += '-NoUpload'
+          }
+
+          ./publish_test_data_reviewer_release.ps1 @args

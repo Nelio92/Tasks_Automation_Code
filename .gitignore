@@ -16,6 +16,7 @@ IFX_Scripts/Test_Data_Analysis/release_pyinstaller/*.zip
 **/converted_csv/
 **/_converted_tmp/
 **/artifacts/
+IFX_Scripts/Test_Data_Reviewer/release_packages/
 
 # Raw tester data and large binary inputs
 *.std
@@ -34,3 +35,4 @@ IFX_Scripts/Test_Data_Analysis/release_pyinstaller/*.zip
 *.pkg
 *.pyz
 *.toc
+
