@@ -1,5 +1,4 @@
-input_folder: PROD_Data
-output_folder: PROD_Data/Outputs
+input_folder: your_input_folder
 convert_stdf_before_analysis: true
 modules:
   - SCAN

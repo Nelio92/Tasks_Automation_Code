@@ -14,7 +14,6 @@ You do NOT need to install Python to use it.
 Open one of the YAML config files in the configs folder and check:
 
 - input_folder
-- output_folder
 - modules
 - convert_stdf_before_analysis
 
@@ -47,7 +46,7 @@ To validate the config without starting the analysis:
 Use dry-run to confirm:
 - the correct config is used
 - the input path is correct
-- the output path is correct
+- the tool can create the Outputs folder under the input path
 - STDF conversion is enabled/disabled as expected
 
 --------------------------------------------------
@@ -73,6 +72,7 @@ C) Analyze only one STDF/EFF source file
 --------------------------------------------------
 
 The tool writes results into the configured output folder.
+The tool creates an Outputs folder automatically inside the configured input folder.
 
 Typical outputs:
 - Test_Data_Reviewer_Report.xlsx
@@ -91,7 +91,7 @@ First try:
 Check for these common problems:
 - config file path is wrong
 - input_folder does not exist
-- output_folder is invalid
+- the tool cannot create the Outputs folder under input_folder
 - no matching CSV/STDF/EFF files are found
 - Excel output file is already open
 

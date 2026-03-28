@@ -18,7 +18,7 @@ This project now supports a simple release flow that packages `release_pyinstall
 Run from `IFX_Scripts/Test_Data_Reviewer`:
 
 ```powershell
-./publish_test_data_reviewer_release.ps1 -Version v1.0.0 -TeamRepoUrl https://gitlab.intra.infineon.com/wandji/test-data-reviewer.git
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2
 ```
 
 This is the recommended path for the official team release because your local machine can already reach the internal GitLab host.
@@ -47,6 +47,8 @@ Environment variables supported:
 
 If `TDR_TEAM_REPO_TOKEN` is set, the script injects credentials into the HTTPS clone URL for push access.
 
+If a value is not provided as a parameter or environment variable, the interactive script prompts for it.
+
 Recommended values:
 
 - `TDR_TEAM_REPO_URL = https://gitlab.intra.infineon.com/wandji/test-data-reviewer.git`
@@ -54,7 +56,7 @@ Recommended values:
 - `TDR_RELEASE_GIT_USER_NAME = Wandji Lionel Wilfried (PSS RF D RAD PTE TE4)`
 - `TDR_RELEASE_GIT_USER_EMAIL = LionelWilfried.Wandji@infineon.com`
 
-## First official release command
+## Example release command
 
 On your internal Windows machine, open PowerShell in `IFX_Scripts/Test_Data_Reviewer` and run:
 
@@ -65,18 +67,18 @@ $env:TDR_TEAM_REPO_USERNAME = "oauth2"
 $env:TDR_RELEASE_GIT_USER_NAME = "Wandji Lionel Wilfried (PSS RF D RAD PTE TE4)"
 $env:TDR_RELEASE_GIT_USER_EMAIL = "LionelWilfried.Wandji@infineon.com"
 
-./publish_test_data_reviewer_release.ps1 -Version v1.0.0
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2
 ```
 
-## Simpler interactive wrapper
+## Interactive release script
 
-If you do not want to type or export the environment variables manually each time, use:
+Use this single script for both interactive prompting and direct parameter-driven publishing:
 
 ```powershell
 ./publish_test_data_reviewer_release_interactive.ps1
 ```
 
-The wrapper prompts you for:
+When needed, it prompts you for:
 
 - release version
 - GitLab repo URL
@@ -85,12 +87,18 @@ The wrapper prompts you for:
 - commit author email
 - GitLab personal access token
 
-It then calls `publish_test_data_reviewer_release.ps1` for you.
+It can also be used non-interactively when values are already provided through parameters or environment variables.
 
 If you already built the release and want to reuse it:
 
 ```powershell
-./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.0 -SkipBuild
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2 -SkipBuild
+```
+
+If you want to package locally without pushing to the team GitLab repo:
+
+```powershell
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2 -NoPush
 ```
 
 ## GitHub Actions automation
@@ -112,13 +120,34 @@ Use semantic versions for official releases:
 
 - `v1.0.0`
 - `v1.0.1`
+- `v1.0.2`
 - `v1.1.0`
+
+The publish script enforces this format for team-repo publishes:
+
+- `^v<major>.<minor>.<patch>$`
+
+Examples:
+
+- `v1.0.2`
+- `v2.3.0`
+
+If you use `-NoPush` for local packaging only, you can still use non-official draft-style version names.
+
+Document each official release in:
+
+- `CHANGELOG.md`
+
+Recommended documentation split:
+
+- `CHANGELOG.md` in this private source repository is the source of truth for release history.
+- the GitLab project start page should contain only a short user-facing summary of the latest available version.
 
 Recommended tagging command:
 
 ```powershell
-git tag tdr-v1.0.0
-git push origin tdr-v1.0.0
+git tag tdr-v1.0.2
+git push origin tdr-v1.0.2
 ```
 
-The workflow strips the `tdr-` prefix and packages the release as `v1.0.0`.
+The workflow strips the `tdr-` prefix and packages the release as `v1.0.2`.

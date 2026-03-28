@@ -31,14 +31,13 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                 "Index;Category;Message\n1;ALARM;Example sidecar\n",
                 encoding="utf-8",
             )
-            output_dir = tmp_path / "outputs"
+            output_dir = input_dir / "Outputs"
             output_dir.mkdir(parents=True, exist_ok=True)
             config_path = tmp_path / "config_smoke.yaml"
             config_path.write_text(
                 textwrap.dedent(
                     f"""\
                     input_folder: {input_dir.as_posix()}
-                    output_folder: {output_dir.as_posix()}
                     modules:
                       - TXPA
                       - DPLL

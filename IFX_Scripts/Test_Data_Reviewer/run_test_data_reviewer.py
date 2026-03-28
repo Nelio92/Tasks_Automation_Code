@@ -39,7 +39,7 @@ DEVELOPER_DEFAULTS = {
     "pearson_abs_min_for_report": 0.8,
     "wafermap_circle_area_mult": 1.0,
 }
-REQUIRED_CONFIG_KEYS = {"input_folder", "output_folder", "modules"}
+REQUIRED_CONFIG_KEYS = {"input_folder", "modules"}
 OPTIONAL_CONFIG_KEYS = {
     "yield_threshold",
     "cpk_low",
@@ -57,6 +57,10 @@ OPTIONAL_CONFIG_KEYS = {
     "stdf_input_folder",
 }
 ALLOWED_CONFIG_KEYS = REQUIRED_CONFIG_KEYS | OPTIONAL_CONFIG_KEYS
+
+
+def _default_output_folder(input_folder: Path) -> Path:
+    return input_folder / "Outputs"
 
 
 class ConfigValidationError(ValueError):
@@ -167,7 +171,6 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
         normalized[key] = value.strip()
 
     require_non_empty_string("input_folder")
-    require_non_empty_string("output_folder")
 
     input_folder = normalized.get("input_folder")
     if isinstance(input_folder, str):
@@ -183,13 +186,9 @@ def _validate_and_normalize_config(config: dict[str, Any], config_path: Path) ->
         elif not input_path.is_dir():
             errors.append(f"input_folder is not a directory: {input_path}")
 
-    output_folder = normalized.get("output_folder")
-    if isinstance(output_folder, str):
-        output_path = _resolve_from_test_data_analysis_root(output_folder)
-        normalized["output_folder"] = output_path
-        output_parent = output_path.parent if output_path.parent != Path("") else Path(".")
-        if not output_parent.exists():
-            errors.append(f"output_folder parent directory does not exist: {output_parent}")
+    resolved_input_folder = normalized.get("input_folder")
+    if isinstance(resolved_input_folder, Path):
+        normalized["output_folder"] = _default_output_folder(resolved_input_folder)
 
     modules = config.get("modules")
     if not _is_sequence_but_not_string(modules):
@@ -358,7 +357,8 @@ def _load_config(config_path: Path) -> dict[str, Any]:
 def _apply_config(config: dict[str, Any]) -> None:
     if "input_folder" in config:
         analysis.INPUT_FOLDER = Path(str(config["input_folder"]))
-    if "output_folder" in config:
+        analysis.OUTPUT_FOLDER = _default_output_folder(analysis.INPUT_FOLDER)
+    elif "output_folder" in config:
         analysis.OUTPUT_FOLDER = Path(str(config["output_folder"]))
     if "modules" in config:
         analysis.MODULES = [str(item).strip().upper() for item in list(config["modules"]) if str(item).strip()]
@@ -452,7 +452,8 @@ def _prepare_stdf_inputs(config: dict[str, Any]) -> None:
         return
 
     _print_progress("STDF conversion", 0, 1, "converting STDF files into CSV")
-    artifacts_folder = Path(str(config["output_folder"])) / "Artifacts"
+    derived_output_folder = Path(str(config.get("output_folder") or _default_output_folder(input_folder)))
+    artifacts_folder = derived_output_folder / "Artifacts"
     summary = stdf_to_flat_csv.convert_stdf_folder(
         input_folder=input_folder,
         output_folder=input_folder,

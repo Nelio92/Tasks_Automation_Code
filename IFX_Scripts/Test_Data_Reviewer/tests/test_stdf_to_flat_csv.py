@@ -214,7 +214,6 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             config = launcher._validate_and_normalize_config(
                 {
                     "input_folder": str(generated_csv_dir),
-                    "output_folder": str(TEST_DATA_ANALYSIS_DIR / "tests"),
                     "modules": ["TXPA"],
                     "convert_stdf_before_analysis": True,
                 },
@@ -222,6 +221,7 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             )
 
             self.assertEqual(config["input_folder"], generated_csv_dir.resolve())
+            self.assertEqual(config["output_folder"], generated_csv_dir.resolve() / "Outputs")
 
     def test_convert_stdf_before_analysis_allows_missing_generated_csv_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -231,7 +231,6 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             config = launcher._validate_and_normalize_config(
                 {
                     "input_folder": str(tmp_path / "generated_csv"),
-                    "output_folder": str(reports_dir),
                     "modules": ["TXPA"],
                     "convert_stdf_before_analysis": True,
                 },
@@ -239,6 +238,7 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             )
 
             self.assertEqual(config["input_folder"], (tmp_path / "generated_csv").resolve())
+            self.assertEqual(config["output_folder"], (tmp_path / "generated_csv").resolve() / "Outputs")
 
     def test_convert_stdf_before_analysis_allows_existing_csvs_in_input_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -250,7 +250,6 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             config = launcher._validate_and_normalize_config(
                 {
                     "input_folder": str(generated_csv_dir),
-                    "output_folder": str(tmp_path / "reports"),
                     "modules": ["TXPA"],
                     "convert_stdf_before_analysis": True,
                 },
@@ -258,6 +257,7 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
             )
 
             self.assertEqual(config["input_folder"], generated_csv_dir.resolve())
+            self.assertEqual(config["output_folder"], generated_csv_dir.resolve() / "Outputs")
 
     def test_prepare_stdf_inputs_skips_conversion_when_csv_already_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -314,7 +314,6 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
                         {
                             "convert_stdf_before_analysis": True,
                             "input_folder": input_dir,
-                            "output_folder": tmp_path / "reports",
                             "stdf_file_patterns": ["*.eff"],
                         }
                     )
@@ -345,7 +344,6 @@ class StdfToFlatCsvUnitTests(unittest.TestCase):
                         {
                             "convert_stdf_before_analysis": True,
                             "input_folder": input_dir,
-                            "output_folder": tmp_path / "reports",
                             "stdf_file_patterns": ["*.eff"],
                         }
                     )

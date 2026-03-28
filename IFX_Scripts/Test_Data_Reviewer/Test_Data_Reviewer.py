@@ -32,6 +32,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from statistics import NormalDist
 from typing import Any, Iterable, Literal
 from xml.etree import ElementTree as ET
 
@@ -41,6 +42,8 @@ DELIMITER = ";"
 WAFER_MAP_FAIL_COORDS_MAX_ITEMS = 50
 WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_WIDE = 84
 WAFER_MAP_FAIL_COORDS_WRAP_WIDTH_NARROW = 56
+CDF_PROBABILITY_TICKS_PCT = (0.01, 0.1, 1.0, 10.0, 50.0, 90.0, 99.0, 99.9, 99.99)
+_NORMAL_DIST = NormalDist()
 
 
 # ================================================
@@ -617,6 +620,32 @@ def _count_hist_peaks(values) -> int:
     return max(1, peaks)
 
 
+def _probability_axis_forward(percent_values):
+    import numpy as np
+
+    values = np.asarray(percent_values, dtype=float)
+    clipped = np.clip(values / 100.0, 1e-6, 1.0 - 1e-6)
+    transformed = [_NORMAL_DIST.inv_cdf(float(value)) for value in clipped.ravel()]
+    return np.asarray(transformed, dtype=float).reshape(values.shape)
+
+
+def _probability_axis_inverse(z_values):
+    import numpy as np
+
+    values = np.asarray(z_values, dtype=float)
+    restored = [_NORMAL_DIST.cdf(float(value)) * 100.0 for value in values.ravel()]
+    return np.asarray(restored, dtype=float).reshape(values.shape)
+
+
+def _apply_probability_percent_axis(ax) -> None:
+    tick_labels = [f"{tick:g}" for tick in CDF_PROBABILITY_TICKS_PCT]
+    ax.set_yscale("function", functions=(_probability_axis_forward, _probability_axis_inverse))
+    ax.set_ylim(CDF_PROBABILITY_TICKS_PCT[0], CDF_PROBABILITY_TICKS_PCT[-1])
+    ax.set_yticks(CDF_PROBABILITY_TICKS_PCT)
+    ax.set_yticklabels(tick_labels)
+    ax.set_ylabel("CDF (%)")
+
+
 def _cdf_plot_png(
     values,
     *,
@@ -657,7 +686,7 @@ def _cdf_plot_png(
     order = np.argsort(v)
     v = v[order]
     fail_mask = fail_mask[order]
-    y = np.arange(1, v.size + 1) / v.size
+    y = 100.0 * np.arange(1, v.size + 1) / v.size
 
     mean_v = float(np.mean(v))
     median_v = float(np.median(v))
@@ -708,13 +737,13 @@ def _cdf_plot_png(
         if zoom_limits is not None:
             ax.set_xlim(*zoom_limits)
 
+    _apply_probability_percent_axis(ax)
     ax.grid(True, alpha=0.3)
     if has_spec:
         ax.set_title(title + f"\nFail chips: {n_fail}/{v.size}")
     else:
         ax.set_title(title + f"\nFail chips: N/A (no spec limits)")
     ax.set_xlabel("Value")
-    ax.set_ylabel("CDF")
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -757,7 +786,7 @@ def _cdf_plot_png_pair(
     order = np.argsort(v)
     v = v[order]
     fail_mask = fail_mask[order]
-    y = np.arange(1, v.size + 1) / v.size
+    y = 100.0 * np.arange(1, v.size + 1) / v.size
     n_fail = int(np.count_nonzero(fail_mask))
 
     fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=140)
@@ -797,13 +826,13 @@ def _cdf_plot_png_pair(
     if proposed_u12 is not None and np.isfinite(proposed_u12):
         ax.axvline(float(proposed_u12), color="#9467BD", linestyle=":", linewidth=1.2, label=f"UTL 12s={_fmt_1dp(float(proposed_u12))}")
 
+    _apply_probability_percent_axis(ax)
     ax.grid(True, alpha=0.3)
     if has_spec:
         ax.set_title(title + f"\nFail chips: {n_fail}/{v.size}")
     else:
         ax.set_title(title + f"\nFail chips: N/A (no spec limits)")
     ax.set_xlabel("Value")
-    ax.set_ylabel("CDF")
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -858,7 +887,7 @@ def _cdf_plot_by_site_png(
         site_values = np.sort(group["v"].to_numpy(dtype=float))
         if site_values.size == 0:
             continue
-        y = np.arange(1, site_values.size + 1) / site_values.size
+        y = 100.0 * np.arange(1, site_values.size + 1) / site_values.size
         site_label = _format_site_identifier(site_num)
         ax.scatter(
             site_values,
@@ -881,10 +910,10 @@ def _cdf_plot_by_site_png(
         if zoom_limits is not None:
             ax.set_xlim(*zoom_limits)
 
+    _apply_probability_percent_axis(ax)
     ax.grid(True, alpha=0.3)
     ax.set_title(title + "\nDistribution grouped by site")
     ax.set_xlabel("Value")
-    ax.set_ylabel("CDF")
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)

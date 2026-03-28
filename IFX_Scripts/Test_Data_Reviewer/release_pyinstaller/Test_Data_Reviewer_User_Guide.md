@@ -65,7 +65,7 @@ Important assumptions:
 
 ## 4) Outputs you will get
 
-Typical outputs are written to the `output_folder` defined in the selected YAML config.
+Typical outputs are written to the `Outputs` folder created automatically inside the selected `input_folder`.
 
 ### Main report
 - `Test_Data_Reviewer_Report.xlsx`
@@ -95,10 +95,9 @@ When STDF conversion is enabled, the tool can also create:
 2. Open the YAML config you want to use.
 3. Check these important values:
    - `input_folder`
-   - `output_folder`
    - `modules`
    - `convert_stdf_before_analysis`
-4. Make sure the input and output locations are valid for your machine.
+4. Make sure the input location is valid for your machine and writable for creating the `Outputs` subfolder.
 
 Note:
 - relative paths in the YAML file are resolved from the executable/release context
@@ -141,7 +140,6 @@ Use this when your input folder already contains flat production CSV files.
 Recommended setup:
 - `convert_stdf_before_analysis: false`
 - `input_folder`: folder containing CSV files
-- `output_folder`: folder where reports should be written
 
 Run:
 
@@ -241,7 +239,9 @@ You normally only need to edit a few YAML fields.
 ### Paths
 - `input_folder`
   - where the tool reads CSV or STDF files
-- `output_folder`
+
+The tool automatically creates and uses:
+- `input_folder/Outputs`
   - where the reports and plots are written
 
 ### Selection
@@ -392,7 +392,7 @@ This section summarizes the 7 key metrics used by the reviewer to flag tests wit
 
 ### Excel file cannot be overwritten
 - close the workbook and run again
-- if needed, use a different `output_folder`
+- if needed, move or rename the existing file in `input_folder/Outputs`
 
 ### Correlation report is missing
 - correlation report generation is a developer-only source setting and is not controlled from the YAML config
