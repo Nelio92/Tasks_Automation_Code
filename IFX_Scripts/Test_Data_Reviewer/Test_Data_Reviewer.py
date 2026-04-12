@@ -33,7 +33,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from statistics import NormalDist
-from typing import Any, Iterable, Literal
+from typing import Any, Callable, Iterable, Literal
 from xml.etree import ElementTree as ET
 
 
@@ -878,6 +878,62 @@ def _cdf_plot_png_pair(
     plt.close(fig)
 
 
+def _scatter_plot_png(
+    values,
+    *,
+    title: str,
+    out_path: Path,
+    low_limit: float | None = None,
+    high_limit: float | None = None,
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    series = pd.to_numeric(values, errors="coerce")
+    finite_mask = series.notna() & np.isfinite(series)
+    finite = series[finite_mask].to_numpy(dtype=float)
+    if finite.size == 0:
+        return
+
+    x_values = np.arange(finite.size, dtype=int)
+    fail_mask = np.zeros(finite.size, dtype=bool)
+    if low_limit is not None:
+        fail_mask |= finite < float(low_limit)
+    if high_limit is not None:
+        fail_mask |= finite > float(high_limit)
+
+    fig, ax = plt.subplots(figsize=(8.0, 4.0), dpi=140)
+    pass_mask = ~fail_mask
+    if pass_mask.any():
+        ax.scatter(x_values[pass_mask], finite[pass_mask], s=12, alpha=0.75, color="#4F81BD", label="In spec")
+    if fail_mask.any():
+        ax.scatter(x_values[fail_mask], finite[fail_mask], s=18, alpha=0.9, color="#C0504D", label="Out of spec")
+    if low_limit is not None:
+        ax.axhline(float(low_limit), color="#D62728", linestyle="--", linewidth=1.1)
+    if high_limit is not None:
+        ax.axhline(float(high_limit), color="#D62728", linestyle="--", linewidth=1.1)
+
+    ax.set_title(title)
+    ax.set_xlabel("Device number")
+    ax.set_ylabel("Test value")
+    ax.grid(True, alpha=0.18)
+    if fail_mask.any() and pass_mask.any():
+        ax.legend(loc="best")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, format="png")
+    plt.close(fig)
+
+
 def _cdf_plot_by_site_png(
     values,
     *,
@@ -1478,6 +1534,91 @@ class TestMetricAssessment:
     is_analog_unit: bool
     peak_count: int
     multimodality_reason: str | None
+
+
+REVIEW_DECISION_ACCEPT = "Accept"
+REVIEW_DECISION_INVESTIGATE = "Investigate"
+REVIEW_DECISION_UNREVIEWED = "Unreviewed"
+REVIEW_DECISIONS = (
+    REVIEW_DECISION_ACCEPT,
+    REVIEW_DECISION_INVESTIGATE,
+    REVIEW_DECISION_UNREVIEWED,
+)
+
+
+@dataclass
+class ReviewFinding:
+    file_name: str
+    file_path: Path
+    sheet_name: str
+    report_file_label: str
+    module: str
+    test_col: int
+    test_name: str
+    unit: str | None
+    yield_pct: float | None
+    cpk: float | None
+    status: str
+    metric_keys: tuple[str, ...]
+    priority: str
+    fail_chips: int
+    fail_coordinates: str
+    findings: str
+    outliers: int
+    sample_count: int
+    original_ltl: float | None
+    original_utl: float | None
+    ltl_6s: float | None
+    utl_6s: float | None
+    ltl_12s: float | None
+    utl_12s: float | None
+    temp_label: str
+    decision: str = REVIEW_DECISION_UNREVIEWED
+    te_notes: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewDataset:
+    input_folder: Path
+    output_folder: Path
+    modules: tuple[str, ...]
+    processed_files: tuple[str, ...]
+    findings: tuple[ReviewFinding, ...]
+    file_plot_caches: dict[str, ReviewFilePlotCache]
+    outlier_mad_multiplier: float
+    yield_threshold: float
+    cpk_low: float
+    cpk_high: float
+    encoding: str
+
+
+@dataclass(frozen=True)
+class ReviewPlotData:
+    finding: ReviewFinding
+    numeric_series: Any
+    meta_cols: Any
+    finite_values: Any
+    low_limit: float | None
+    high_limit: float | None
+    mean_value: float
+    median_value: float
+
+
+@dataclass(frozen=True)
+class ReviewFilePlotCache:
+    file_path: Path
+    data_frame: Any
+    meta_cols: Any
+    available_test_cols: frozenset[str]
+
+
+def _normalize_review_decision(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == REVIEW_DECISION_ACCEPT.lower():
+        return REVIEW_DECISION_ACCEPT
+    if normalized == REVIEW_DECISION_INVESTIGATE.lower():
+        return REVIEW_DECISION_INVESTIGATE
+    return REVIEW_DECISION_UNREVIEWED
 
 
 def _format_site_identifier(site_value: Any) -> str:
@@ -2213,6 +2354,7 @@ def _add_overview_sheet(
     modules: list[str],
     processed_files: list[str],
     output_folder: Path,
+    include_plots_sheet_column: bool = True,
 ) -> None:
     from collections import Counter
     from datetime import datetime
@@ -2372,7 +2514,9 @@ def _add_overview_sheet(
     ws.cell(row=row_cursor, column=1, value="File summary").font = Font(bold=True, size=12)
     ws.cell(row=row_cursor, column=1).fill = section_fill
     row_cursor += 1
-    file_headers = ["File", "Affected tests", "High priority", "Medium priority", "Low priority", "Total fail chips", "Data sheet", "Plots sheet"]
+    file_headers = ["File", "Affected tests", "High priority", "Medium priority", "Low priority", "Total fail chips", "Data sheet"]
+    if include_plots_sheet_column:
+        file_headers.append("Plots sheet")
     for col_idx, header in enumerate(file_headers, start=1):
         cell = ws.cell(row=row_cursor, column=col_idx, value=header)
         cell.font = Font(bold=True)
@@ -2390,7 +2534,7 @@ def _add_overview_sheet(
                 "low": 0,
                 "fail_chips": 0,
                 "sheet_name": entry["sheet_name"],
-                "plots_sheet_name": entry["plots_sheet_name"],
+                "plots_sheet_name": entry.get("plots_sheet_name"),
             },
         )
         item["affected"] += 1
@@ -2410,13 +2554,688 @@ def _add_overview_sheet(
         data_cell = ws.cell(row=row_cursor, column=7, value="Open")
         data_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['sheet_name']))}!A1"
         data_cell.font = link_font
-        plots_cell = ws.cell(row=row_cursor, column=8, value="Open")
-        plots_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['plots_sheet_name']))}!A1"
-        plots_cell.font = link_font
+        if include_plots_sheet_column and item.get("plots_sheet_name"):
+            plots_cell = ws.cell(row=row_cursor, column=8, value="Open")
+            plots_cell.hyperlink = f"#{_excel_internal_sheet_ref(str(item['plots_sheet_name']))}!A1"
+            plots_cell.font = link_font
         row_cursor += 1
 
     _autofit_openpyxl_columns(ws)
     ws.freeze_panes = "A3"
+
+
+def collect_review_dataset(
+    *,
+    input_folder: Path,
+    output_folder: Path,
+    modules: list[str],
+    outlier_mad_multiplier: float,
+    yield_threshold: float,
+    cpk_low: float,
+    cpk_high: float,
+    max_files: int | None,
+    single_file: str | None,
+    encoding: str = DEFAULT_ENCODING,
+    show_progress: bool = False,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> ReviewDataset:
+    import numpy as np
+    import pandas as pd
+
+    csv_paths = _collect_analysis_csv_paths(
+        input_folder,
+        single_file=single_file,
+        max_files=max_files,
+    )
+    if not csv_paths:
+        raise SystemExit(f"No .csv files found in: {input_folder}")
+
+    modules_upper = tuple(m.strip().upper() for m in modules if m.strip())
+    if not modules_upper:
+        raise SystemExit("No modules provided. Example: --modules DPLL,TXPA,TXLO")
+
+    findings: list[ReviewFinding] = []
+    file_plot_caches: dict[str, ReviewFilePlotCache] = {}
+    data_sheet_names: list[str] = []
+    total_files = len(csv_paths)
+
+    if progress_callback is not None:
+        progress_callback(
+            "starting",
+            {
+                "total_files": total_files,
+                "input_folder": str(input_folder),
+            },
+        )
+
+    for file_idx, file_path in enumerate(csv_paths, start=1):
+        if show_progress:
+            _print_progress("Review files", file_idx - 1, total_files, f"starting {file_path.name}")
+        if progress_callback is not None:
+            progress_callback(
+                "file_start",
+                {
+                    "file_index": file_idx,
+                    "total_files": total_files,
+                    "file_name": file_path.name,
+                },
+            )
+
+        meta = scan_flat_file_meta(file_path, encoding=encoding)
+        wafer_sig = _parse_filename_wafer_signature(file_path.name)
+        temp_label = _parse_insertion_temperature_label(file_path.name)
+        report_file_label = _build_report_file_label(file_path.name, file_idx)
+
+        interest_cols: list[str] = []
+        interest_names: dict[str, str] = {}
+        interest_modules: dict[str, str] = {}
+        for test_col in meta.numeric_test_cols:
+            test_name = _test_name_from_meta(meta, test_col)
+            module = _module_from_test_name(test_name)
+            if module in modules_upper:
+                interest_cols.append(test_col)
+                interest_names[test_col] = test_name
+                interest_modules[test_col] = module
+
+        if not interest_cols:
+            if show_progress:
+                _print_progress("Review files", file_idx, total_files, f"skipped {file_path.name}")
+            continue
+
+        wanted_meta_cols = [
+            c
+            for c in ("SITE_NUM", "WAFER", "X", "Y", "LOT", "SUBLOT", "CHIP_ID", "PF", "FIRST_FAIL_TEST")
+            if c in meta.header
+        ]
+        usecols = wanted_meta_cols + interest_cols
+        if progress_callback is not None:
+            progress_callback(
+                "file_loading",
+                {
+                    "file_index": file_idx,
+                    "total_files": total_files,
+                    "file_name": file_path.name,
+                    "candidate_tests": len(interest_cols),
+                },
+            )
+        df_units = _read_unit_data(
+            file_path,
+            data_start_line_index=meta.data_start_line_index,
+            usecols=usecols,
+            encoding=encoding,
+        )
+        meta_cols_df = df_units[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=df_units.index)
+
+        affected: list[str] = []
+        assessment_by_col: dict[str, TestMetricAssessment] = {}
+        numeric_series_by_col: dict[str, Any] = {}
+        yield_by_col: dict[str, float | None] = {}
+        cpk_by_col: dict[str, float | None] = {}
+        for test_col in interest_cols:
+            numeric_series = pd.to_numeric(df_units[test_col], errors="coerce")
+            yield_pct, cpk = _yield_cpk_from_meta(meta, test_col)
+            yield_by_col[test_col] = yield_pct
+            cpk_by_col[test_col] = cpk
+            _, _, unit = _limits_from_meta(meta, test_col)
+            assessment = _assess_test_metrics(
+                series=numeric_series,
+                meta_cols=meta_cols_df,
+                unit=unit,
+                yield_pct=yield_pct,
+                cpk=cpk,
+                yield_threshold=yield_threshold,
+                cpk_low=cpk_low,
+                cpk_high=cpk_high,
+                wafer_sig=wafer_sig,
+            )
+            assessment_by_col[test_col] = assessment
+            if assessment.status_text:
+                affected.append(test_col)
+                numeric_series_by_col[test_col] = numeric_series
+
+        affected.sort(key=lambda col: (interest_modules.get(col, ""), int(col)))
+        if not affected:
+            if show_progress:
+                _print_progress("Review files", file_idx, total_files, f"skipped {file_path.name}")
+            continue
+
+        cache_cols = wanted_meta_cols + affected
+        cache_df = df_units[cache_cols].copy()
+        cache_meta_cols_df = cache_df[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=cache_df.index)
+        file_plot_caches[str(file_path)] = ReviewFilePlotCache(
+            file_path=file_path,
+            data_frame=cache_df,
+            meta_cols=cache_meta_cols_df,
+            available_test_cols=frozenset(affected),
+        )
+
+        sheet_name = _unique_sheet_name(report_file_label, data_sheet_names)
+        data_sheet_names.append(sheet_name)
+        total_affected = len(affected)
+        if progress_callback is not None:
+            progress_callback(
+                "file_loaded",
+                {
+                    "file_index": file_idx,
+                    "total_files": total_files,
+                    "file_name": file_path.name,
+                    "affected_tests": total_affected,
+                },
+            )
+
+        for test_idx, test_col in enumerate(affected, start=1):
+            if show_progress:
+                _print_progress("Review tests", test_idx - 1, total_affected, f"{file_path.name} | test {test_col}")
+            if progress_callback is not None and (test_idx == 1 or test_idx == total_affected or test_idx % 25 == 0):
+                progress_callback(
+                    "test_progress",
+                    {
+                        "file_index": file_idx,
+                        "total_files": total_files,
+                        "file_name": file_path.name,
+                        "test_index": test_idx,
+                        "total_tests": total_affected,
+                        "test_col": str(test_col),
+                    },
+                )
+
+            assessment = assessment_by_col[test_col]
+            metric_key_set = set(assessment.metric_keys)
+            numeric = numeric_series_by_col[test_col]
+            finite = numeric.dropna().to_numpy(dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if finite.size == 0:
+                continue
+
+            low, high, unit = _limits_from_meta(meta, test_col)
+            low_eval = -np.inf if low is None else float(low)
+            high_eval = np.inf if high is None else float(high)
+            if low is None and high is None:
+                n_fail = 0
+            else:
+                n_fail = int(((finite < low_eval) | (finite > high_eval)).sum())
+
+            median_value = float(np.median(finite))
+            mad = _mad(finite)
+            n_out = 0
+            if mad > 0:
+                n_out = int((np.abs(finite - median_value) > (outlier_mad_multiplier * mad)).sum())
+
+            l6, u6, l12, u12 = _proposed_sigma_limits(numeric)
+            fail_coordinates = ""
+            if METRIC_YIELD in metric_key_set:
+                fail_coordinates = _format_fail_coordinates_for_sheet(
+                    numeric,
+                    meta_cols=meta_cols_df,
+                    low_limit=low,
+                    high_limit=high,
+                )
+
+            findings.append(
+                ReviewFinding(
+                    file_name=file_path.name,
+                    file_path=file_path,
+                    sheet_name=sheet_name,
+                    report_file_label=report_file_label,
+                    module=interest_modules.get(test_col, ""),
+                    test_col=int(test_col),
+                    test_name=interest_names.get(test_col, ""),
+                    unit=unit,
+                    yield_pct=yield_by_col.get(test_col),
+                    cpk=cpk_by_col.get(test_col),
+                    status=assessment.status_text or "",
+                    metric_keys=assessment.metric_keys,
+                    priority=assessment.priority,
+                    fail_chips=n_fail,
+                    fail_coordinates=fail_coordinates,
+                    findings=_build_comment(
+                        series=numeric,
+                        meta_cols=meta_cols_df,
+                        outlier_mad_multiplier=outlier_mad_multiplier,
+                        low_limit=low,
+                        high_limit=high,
+                        wafer_sig=wafer_sig,
+                        metric_assessment=assessment,
+                    ),
+                    outliers=n_out,
+                    sample_count=int(finite.size),
+                    original_ltl=low,
+                    original_utl=high,
+                    ltl_6s=l6,
+                    utl_6s=u6,
+                    ltl_12s=l12,
+                    utl_12s=u12,
+                    temp_label=temp_label,
+                )
+            )
+
+            if show_progress:
+                _print_progress("Review tests", test_idx, total_affected, f"{file_path.name} | test {test_col}")
+
+        if show_progress:
+            _print_progress("Review files", file_idx, total_files, f"finished {file_path.name}")
+        if progress_callback is not None:
+            progress_callback(
+                "file_done",
+                {
+                    "file_index": file_idx,
+                    "total_files": total_files,
+                    "file_name": file_path.name,
+                    "findings_so_far": len(findings),
+                },
+            )
+
+    if progress_callback is not None:
+        progress_callback(
+            "completed",
+            {
+                "total_files": total_files,
+                "total_findings": len(findings),
+            },
+        )
+
+    return ReviewDataset(
+        input_folder=input_folder,
+        output_folder=output_folder,
+        modules=tuple(modules_upper),
+        processed_files=tuple(path.name for path in csv_paths),
+        findings=tuple(findings),
+        file_plot_caches=file_plot_caches,
+        outlier_mad_multiplier=float(outlier_mad_multiplier),
+        yield_threshold=float(yield_threshold),
+        cpk_low=float(cpk_low),
+        cpk_high=float(cpk_high),
+        encoding=str(encoding),
+    )
+
+
+def export_review_dataset_workbook(
+    dataset: ReviewDataset,
+    *,
+    destination_path: Path,
+) -> Path:
+    from datetime import datetime
+
+    from openpyxl import Workbook
+    from openpyxl.formatting.rule import ColorScaleRule, FormulaRule
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+    findings_by_sheet: dict[str, list[ReviewFinding]] = {}
+    for finding in dataset.findings:
+        findings_by_sheet.setdefault(finding.sheet_name, []).append(finding)
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    overview_entries: list[dict[str, Any]] = []
+    metric_header_fill = PatternFill(patternType="solid", fgColor="FFFF00")
+    rotated_metric_alignment = Alignment(horizontal="center", vertical="center", textRotation=90)
+    yes_fill = PatternFill(patternType="solid", fgColor="FFC7CE")
+    no_fill = PatternFill(patternType="solid", fgColor="C6EFCE")
+    yes_font = Font(color="9C0006")
+    no_font = Font(color="006100")
+
+    headers = [
+        "Module",
+        "Test Nr",
+        "Test Name",
+        "Unit",
+        "Yield (%)",
+        "Cpk",
+        "Fails",
+        "Cpk<1.67",
+        "Cpk>20",
+        "Site-to-Site Delta",
+        "Multimodality",
+        "Unique Values",
+        "Skewness",
+        "Findings",
+        "Decision",
+        "Fails Count",
+        "Fails Coordinates",
+        "Outliers",
+        "N",
+        "Original LTL",
+        "Original UTL",
+        "LTL 6s",
+        "UTL 6s",
+        "LTL 12s",
+        "UTL 12s",
+        "TE notes",
+    ]
+    metric_header_names = {
+        "Fails",
+        "Cpk<1.67",
+        "Cpk>20",
+        "Site-to-Site Delta",
+        "Multimodality",
+        "Unique Values",
+        "Skewness",
+    }
+
+    sheet_order: list[str] = []
+    seen_sheet_names: set[str] = set()
+    for file_name in dataset.processed_files:
+        for finding in dataset.findings:
+            if finding.file_name == file_name and finding.sheet_name not in seen_sheet_names:
+                sheet_order.append(finding.sheet_name)
+                seen_sheet_names.add(finding.sheet_name)
+
+    for sheet_name in sheet_order:
+        sheet_findings = findings_by_sheet.get(sheet_name, [])
+        if not sheet_findings:
+            continue
+
+        ws = wb.create_sheet(sheet_name)
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for col_idx, header in enumerate(headers, start=1):
+            if header in metric_header_names:
+                header_cell = ws.cell(row=1, column=col_idx)
+                header_cell.fill = metric_header_fill
+                header_cell.alignment = rotated_metric_alignment
+        ws.row_dimensions[1].height = 72
+
+        for finding in sheet_findings:
+            metric_keys = set(finding.metric_keys)
+            multimodality_value = 1
+            if METRIC_MULTIMODALITY in metric_keys:
+                multimodality_value = max(int(sum(1 for key in metric_keys if key == METRIC_MULTIMODALITY)), 2)
+
+            ws.append(
+                [
+                    finding.module,
+                    int(finding.test_col),
+                    finding.test_name,
+                    finding.unit,
+                    finding.yield_pct,
+                    finding.cpk,
+                    "YES" if METRIC_YIELD in metric_keys else "NO",
+                    "YES" if METRIC_CPK_LOW in metric_keys else "NO",
+                    "YES" if METRIC_CPK_HIGH in metric_keys else "NO",
+                    "YES" if METRIC_SITE_DELTA in metric_keys else "NO",
+                    multimodality_value,
+                    "NO" if METRIC_UNIQUE_VALUES in metric_keys else "YES",
+                    "YES" if METRIC_SKEWNESS in metric_keys else "NO",
+                    finding.findings,
+                    _normalize_review_decision(finding.decision),
+                    finding.fail_chips,
+                    finding.fail_coordinates,
+                    finding.outliers,
+                    finding.sample_count,
+                    finding.original_ltl,
+                    finding.original_utl,
+                    finding.ltl_6s,
+                    finding.utl_6s,
+                    finding.ltl_12s,
+                    finding.utl_12s,
+                    finding.te_notes,
+                ]
+            )
+
+            row_idx = ws.max_row
+            for col_name in ("Original LTL", "Original UTL"):
+                col_idx = headers.index(col_name) + 1
+                ws.cell(row=row_idx, column=col_idx).number_format = "0.######"
+            for col_name in ("LTL 6s", "UTL 6s", "LTL 12s", "UTL 12s"):
+                col_idx = headers.index(col_name) + 1
+                ws.cell(row=row_idx, column=col_idx).number_format = "0.0"
+
+            overview_entries.append(
+                {
+                    "file_name": finding.file_name,
+                    "sheet_name": finding.sheet_name,
+                    "module": finding.module,
+                    "test_col": int(finding.test_col),
+                    "test_name": finding.test_name,
+                    "status": finding.status,
+                    "metric_keys": finding.metric_keys,
+                    "priority": finding.priority,
+                    "fail_chips": finding.fail_chips,
+                    "yield_pct": finding.yield_pct,
+                    "cpk": finding.cpk,
+                }
+            )
+
+        out_rows = len(sheet_findings)
+        fail_chips_col_letter = _excel_col_letter(headers.index("Fails Count") + 1)
+        ws.conditional_formatting.add(
+            f"{fail_chips_col_letter}2:{fail_chips_col_letter}{1 + out_rows}",
+            ColorScaleRule(
+                start_type="min",
+                start_color="63BE7B",
+                mid_type="percentile",
+                mid_value=50,
+                mid_color="FFEB84",
+                end_type="max",
+                end_color="F8696B",
+            ),
+        )
+
+        cpk_col_letter = _excel_col_letter(headers.index("Cpk") + 1)
+        ws.conditional_formatting.add(
+            f"{cpk_col_letter}2:{cpk_col_letter}{1 + out_rows}",
+            ColorScaleRule(
+                start_type="min",
+                start_color="F8696B",
+                mid_type="percentile",
+                mid_value=50,
+                mid_color="FFFFFF",
+                end_type="max",
+                end_color="5A8AC6",
+            ),
+        )
+
+        yes_no_metric_headers = ["Fails", "Cpk<1.67", "Cpk>20", "Site-to-Site Delta", "Skewness"]
+        for col_name in yes_no_metric_headers:
+            col_idx = headers.index(col_name) + 1
+            col_letter = _excel_col_letter(col_idx)
+            metric_range = f"{col_letter}2:{col_letter}{1 + out_rows}"
+            ws.conditional_formatting.add(metric_range, FormulaRule(formula=[f'EXACT({col_letter}2,"YES")'], fill=yes_fill, font=yes_font))
+            ws.conditional_formatting.add(metric_range, FormulaRule(formula=[f'EXACT({col_letter}2,"NO")'], fill=no_fill, font=no_font))
+
+        unique_values_col_idx = headers.index("Unique Values") + 1
+        unique_values_col_letter = _excel_col_letter(unique_values_col_idx)
+        unique_values_range = f"{unique_values_col_letter}2:{unique_values_col_letter}{1 + out_rows}"
+        ws.conditional_formatting.add(unique_values_range, FormulaRule(formula=[f'EXACT({unique_values_col_letter}2,"NO")'], fill=yes_fill, font=yes_font))
+        ws.conditional_formatting.add(unique_values_range, FormulaRule(formula=[f'EXACT({unique_values_col_letter}2,"YES")'], fill=no_fill, font=no_font))
+
+        multimodality_col_idx = headers.index("Multimodality") + 1
+        multimodality_col_letter = _excel_col_letter(multimodality_col_idx)
+        multimodality_range = f"{multimodality_col_letter}2:{multimodality_col_letter}{1 + out_rows}"
+        ws.conditional_formatting.add(multimodality_range, FormulaRule(formula=[f"{multimodality_col_letter}2=1"], fill=no_fill, font=no_font))
+        ws.conditional_formatting.add(multimodality_range, FormulaRule(formula=[f"{multimodality_col_letter}2<>1"], fill=yes_fill, font=yes_font))
+
+        _apply_module_group_row_colors(ws)
+        hidden_start_idx = headers.index("Original LTL") + 1
+        hidden_end_idx = headers.index("UTL 12s") + 1
+        ws.column_dimensions.group(_excel_col_letter(hidden_start_idx), _excel_col_letter(hidden_end_idx), outline_level=1, hidden=True)
+        for col_idx in range(hidden_start_idx, hidden_end_idx + 1):
+            col_letter = _excel_col_letter(col_idx)
+            ws.column_dimensions[col_letter].hidden = True
+            ws.column_dimensions[col_letter].outline_level = 1
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{_excel_col_letter(ws.max_column)}{ws.max_row}"
+        _autofit_openpyxl_columns(ws)
+
+    if overview_entries:
+        _add_overview_sheet(
+            wb,
+            summary_entries=overview_entries,
+            modules=list(dataset.modules),
+            processed_files=list(dataset.processed_files),
+            output_folder=destination_path.parent,
+            include_plots_sheet_column=False,
+        )
+
+    try:
+        wb.save(destination_path)
+    except PermissionError:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fallback = destination_path.with_stem(f"{destination_path.stem}_{ts}")
+        wb.save(fallback)
+        return fallback
+    return destination_path
+
+
+def generate_on_demand_plot_images(
+    finding: ReviewFinding,
+    *,
+    output_folder: Path,
+    encoding: str = DEFAULT_ENCODING,
+) -> dict[str, Path]:
+    import numpy as np
+    import pandas as pd
+
+    meta = scan_flat_file_meta(finding.file_path, encoding=encoding)
+    wanted_meta_cols = [c for c in ("SITE_NUM", "WAFER", "X", "Y") if c in meta.header]
+    test_col_name = str(finding.test_col)
+    df = _read_unit_data(
+        finding.file_path,
+        data_start_line_index=meta.data_start_line_index,
+        usecols=wanted_meta_cols + [test_col_name],
+        encoding=encoding,
+    )
+    numeric = pd.to_numeric(df[test_col_name], errors="coerce")
+    meta_cols_df = df[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=df.index)
+    finite = numeric.dropna().to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        raise ValueError(f"No finite values available for test {finding.test_col}")
+
+    plot_dir = output_folder / _safe_path_token(f"{finding.report_file_label}_{finding.test_col}")
+    safe_test = re.sub(r"[^A-Za-z0-9._-]+", "_", finding.test_name)[:80] or str(finding.test_col)
+    title = _build_plot_title(
+        test_name=finding.test_name,
+        test_col=str(finding.test_col),
+        temp_label=finding.temp_label,
+        cpk=finding.cpk,
+        mean_v=float(np.mean(finite)),
+        median_v=float(np.median(finite)),
+    )
+
+    cdf_path = plot_dir / f"{finding.test_col}_{safe_test}_cdf.png"
+    cdf_zoomed_path = plot_dir / f"{finding.test_col}_{safe_test}_cdf_zoomed.png"
+    _cdf_plot_png_pair(
+        finite,
+        title=title,
+        out_path=cdf_path,
+        zoomed_out_path=cdf_zoomed_path,
+        low_limit=finding.original_ltl,
+        high_limit=finding.original_utl,
+        proposed_l6=finding.ltl_6s,
+        proposed_u6=finding.utl_6s,
+        proposed_l12=finding.ltl_12s,
+        proposed_u12=finding.utl_12s,
+    )
+
+    scatter_path = plot_dir / f"{finding.test_col}_{safe_test}_scatter.png"
+    _scatter_plot_png(
+        numeric,
+        title=f"{finding.test_name} ({finding.test_col}) | {finding.temp_label}",
+        out_path=scatter_path,
+        low_limit=finding.original_ltl,
+        high_limit=finding.original_utl,
+    )
+
+    output_paths: dict[str, Path] = {
+        "CDF": cdf_path,
+        "CDF Zoomed": cdf_zoomed_path,
+        "Scatter": scatter_path,
+    }
+    if _supports_wafer_maps(finding.file_name):
+        wafer_path = plot_dir / f"{finding.test_col}_{safe_test}_wafermap.png"
+        _wafer_map_png(
+            numeric,
+            meta_cols=meta_cols_df,
+            title=f"{finding.test_name} ({finding.test_col}) | {finding.temp_label}",
+            out_path=wafer_path,
+            low_limit=finding.original_ltl,
+            high_limit=finding.original_utl,
+            unit=finding.unit,
+            median_v=float(np.median(finite)),
+        )
+        output_paths["Wafer map"] = wafer_path
+
+    return output_paths
+
+
+def load_review_plot_data(
+    finding: ReviewFinding,
+    *,
+    file_cache: ReviewFilePlotCache | None = None,
+    encoding: str = DEFAULT_ENCODING,
+) -> ReviewPlotData:
+    import numpy as np
+    import pandas as pd
+
+    test_col_name = str(finding.test_col)
+    if file_cache is not None:
+        if test_col_name not in file_cache.available_test_cols:
+            raise ValueError(f"Test column {finding.test_col} is not available in the cached file data")
+        df = file_cache.data_frame
+        numeric = pd.to_numeric(df[test_col_name], errors="coerce")
+        meta_cols_df = file_cache.meta_cols.copy() if getattr(file_cache.meta_cols, "empty", False) is False else pd.DataFrame(index=df.index)
+    else:
+        meta = scan_flat_file_meta(finding.file_path, encoding=encoding)
+        wanted_meta_cols = [c for c in ("SITE_NUM", "WAFER", "X", "Y") if c in meta.header]
+        df = _read_unit_data(
+            finding.file_path,
+            data_start_line_index=meta.data_start_line_index,
+            usecols=wanted_meta_cols + [test_col_name],
+            encoding=encoding,
+        )
+        numeric = pd.to_numeric(df[test_col_name], errors="coerce")
+        meta_cols_df = df[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=df.index)
+
+    finite = numeric.dropna().to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        raise ValueError(f"No finite values available for test {finding.test_col}")
+
+    return ReviewPlotData(
+        finding=finding,
+        numeric_series=numeric,
+        meta_cols=meta_cols_df,
+        finite_values=finite,
+        low_limit=finding.original_ltl,
+        high_limit=finding.original_utl,
+        mean_value=float(np.mean(finite)),
+        median_value=float(np.median(finite)),
+    )
+
+
+def load_review_file_plot_cache(
+    findings: Iterable[ReviewFinding],
+    *,
+    encoding: str = DEFAULT_ENCODING,
+) -> ReviewFilePlotCache:
+    import pandas as pd
+
+    finding_list = list(findings)
+    if not finding_list:
+        raise ValueError("At least one finding is required to build a file plot cache")
+
+    file_path = finding_list[0].file_path
+    unique_test_cols = sorted({str(finding.test_col) for finding in finding_list})
+    meta = scan_flat_file_meta(file_path, encoding=encoding)
+    wanted_meta_cols = [c for c in ("SITE_NUM", "WAFER", "X", "Y") if c in meta.header]
+    df = _read_unit_data(
+        file_path,
+        data_start_line_index=meta.data_start_line_index,
+        usecols=wanted_meta_cols + unique_test_cols,
+        encoding=encoding,
+    )
+    meta_cols_df = df[wanted_meta_cols].copy() if wanted_meta_cols else pd.DataFrame(index=df.index)
+    return ReviewFilePlotCache(
+        file_path=file_path,
+        data_frame=df,
+        meta_cols=meta_cols_df,
+        available_test_cols=frozenset(unique_test_cols),
+    )
 
 
 def generate_yield_cpk_report(
