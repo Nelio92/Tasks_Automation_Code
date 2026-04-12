@@ -171,7 +171,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Get-RepoRoot -StartPath $scriptRoot
 
 if (-not $Version) {
-    $Version = Read-RequiredValue -Prompt "Release version" -DefaultValue "v1.0.2"
+    $Version = Read-RequiredValue -Prompt "Release version" -DefaultValue "v1.0.3"
 }
 if (-not $TeamRepoUrl -and -not $NoPush) {
     $TeamRepoUrl = Read-RequiredValue -Prompt "GitLab team repo URL" -DefaultValue "https://gitlab.intra.infineon.com/wandji/test-data-reviewer.git"

@@ -4,15 +4,15 @@ Test Data Reviewer is a packaged analysis tool for reviewing production test dat
 
 ## Latest Release
 
-Current version: `v1.0.2`
+Current version: `v1.0.3`
 
 ### Highlights
 
-- Removed `output_folder` from the user configuration
-- The tool now creates `Outputs` automatically inside the selected input folder
-- Updated CDF plot y-axis scaling to a probability-style percentage view
-- Added CDF y-axis levels at 0.01, 0.1, 1, 10, 50, 90, 99, 99.9, and 99.99
-- Improved consistency of recorded CDF plots with the existing data visualization tool
+- Fixed report generation for CSV filenames that contain an extra `.` before the extension
+- Fixed Q-flow sheet naming so `Q11P`, `Q21P`, and `Q31P` appear as `File*_Q11`, `File*_Q21`, and `File*_Q31`
+- Kept insertion names visible in workbook and plot sheet names through stable labels like `File1_S31`
+- Added blue-white-red conditional formatting to the `Cpk` column in the review workbook
+- Improved the Overview module summary readability by adding a blank row between files
 
 ## What This Repository Provides
 

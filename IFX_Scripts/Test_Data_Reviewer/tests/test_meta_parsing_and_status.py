@@ -452,6 +452,18 @@ class StatusLogicUnitTests(unittest.TestCase):
             def set_title(self, *args, **kwargs):
                 return None
 
+            def set_yscale(self, *args, **kwargs):
+                return None
+
+            def set_ylim(self, *args, **kwargs):
+                return None
+
+            def set_yticks(self, *args, **kwargs):
+                return None
+
+            def set_yticklabels(self, *args, **kwargs):
+                return None
+
             def set_xlabel(self, *args, **kwargs):
                 return None
 
@@ -570,6 +582,31 @@ class SheetNameUnitTests(unittest.TestCase):
         self.assertLessEqual(len(first), 31)
         self.assertLessEqual(len(second), 31)
         self.assertNotEqual(first.lower(), second.lower())
+
+    def test_parse_insertion_name_handles_s_and_q_patterns(self) -> None:
+        self.assertEqual(analysis._parse_insertion_name("sample_S11P_file.csv"), "S11")
+        self.assertEqual(analysis._parse_insertion_name("sample_B21P_file.csv"), "B21")
+        self.assertEqual(analysis._parse_insertion_name("sample_Q31P_file.csv"), "Q31")
+        self.assertEqual(analysis._parse_insertion_name("sample_Q31_file.csv"), "Q31")
+        self.assertEqual(analysis._parse_insertion_name("legacy_Q2_file.csv"), "Q2")
+        self.assertIsNone(analysis._parse_insertion_name("sample_without_token.csv"))
+
+    def test_build_report_file_label_keeps_file_index_and_insertion_name(self) -> None:
+        self.assertEqual(
+            analysis._build_report_file_label("20260328184004_3FT6Y118_004_S31P_N_LNZUF01.WIN10_CTRX8188.csv", 1),
+            "File1_S31",
+        )
+        self.assertEqual(
+            analysis._build_report_file_label("z_VQ261413.02-NB001PF_INITIAL_05_Q11P_N1.csv", 2),
+            "File2_Q11",
+        )
+        self.assertEqual(analysis._build_report_file_label("legacy_Q2_sample.csv", 2), "File2_Q2")
+
+    def test_parse_insertion_temperature_label_uses_q11_q21_q31_tokens(self) -> None:
+        self.assertEqual(analysis._parse_insertion_temperature_label("device_Q31_sample.csv"), "Hot (135°C)")
+        self.assertEqual(analysis._parse_insertion_temperature_label("device_Q21_sample.csv"), "Cold (-40°C)")
+        self.assertEqual(analysis._parse_insertion_temperature_label("device_Q11_sample.csv"), "Ambient (25°C)")
+        self.assertEqual(analysis._parse_insertion_temperature_label("device_Q2_sample.csv"), "Unknown")
 
 if __name__ == "__main__":
     unittest.main()

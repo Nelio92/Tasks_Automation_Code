@@ -157,6 +157,12 @@ def _safe_sheet_name(name: str) -> str:
     return safe[:31]
 
 
+def _safe_path_token(name: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name).strip())
+    token = token.strip("_")
+    return token or "item"
+
+
 def _unique_sheet_name(name: str, existing_names) -> str:
     """Return an Excel-safe unique sheet name capped at 31 characters."""
     base = _safe_sheet_name(name)
@@ -171,6 +177,30 @@ def _unique_sheet_name(name: str, existing_names) -> str:
         if candidate.lower() not in existing_lower:
             return candidate
         counter += 1
+
+    
+def _parse_insertion_name(file_name: str) -> str | None:
+    match = re.search(
+        r"(?<![A-Za-z0-9])(S11P|S21P|S31P|B11P|B21P|Q11P|Q21P|Q31P|Q11|Q21|Q31|Q1|Q2|Q3)(?![A-Za-z0-9])",
+        file_name,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    token = match.group(1).upper()
+    if token.endswith("P"):
+        return token[:-1]
+    return token
+
+
+def _build_report_file_label(file_name: str, file_index: int) -> str:
+    insertion_name = _parse_insertion_name(file_name) or "UNK"
+    return f"File{file_index}_{insertion_name}"
+
+
+def _build_plot_folder_name(file_name: str, file_index: int) -> str:
+    return _safe_path_token(_build_report_file_label(file_name, file_index))
 
 
 def _excel_internal_sheet_ref(sheet_name: str) -> str:
@@ -1337,11 +1367,11 @@ def _parse_filename_wafer_signature(file_name: str) -> str | None:
 def _parse_insertion_temperature_label(file_name: str) -> str:
     """Best-effort extraction of insertion temperature from file name."""
     upper = file_name.upper()
-    if "S11P" in upper or "B11P" in upper or "HT" in upper or "Q3" in upper:
+    if "S11P" in upper or "B11P" in upper or "HT" in upper or "Q31" in upper:
         return "Hot (135°C)"
-    if "S21P" in upper or "Q2" in upper:
+    if "S21P" in upper or "Q21" in upper:
         return "Cold (-40°C)"
-    if "S31P" in upper or "B21P" in upper or "RT" in upper or "Q1" in upper:
+    if "S31P" in upper or "B21P" in upper or "RT" in upper or "Q11" in upper:
         return "Ambient (25°C)"
     return "Unknown"
 
@@ -2300,7 +2330,10 @@ def _add_overview_sheet(
     module_metric_header_row = row_cursor
     row_cursor += 1
 
+    previous_file_name: str | None = None
     for file_name, module_name in module_summary_keys:
+        if previous_file_name is not None and file_name != previous_file_name:
+            row_cursor += 1
         item = module_summary[(file_name, module_name)]
         module_metric_keys = [metric_key for metric_key in METRIC_DISPLAY_ORDER if item.get(metric_key, 0) > 0]
         overall = _status_text_from_metric_keys(
@@ -2317,6 +2350,7 @@ def _add_overview_sheet(
         status_cell.fill = priority_fills[overall_priority]
         for metric_offset, metric_key in enumerate(METRIC_DISPLAY_ORDER, start=4):
             ws.cell(row=row_cursor, column=metric_offset, value=item[metric_key])
+        previous_file_name = file_name
         row_cursor += 1
 
     module_metric_start_row = module_metric_header_row + 1
@@ -2434,6 +2468,8 @@ def generate_yield_cpk_report(
         meta = scan_flat_file_meta(file_path, encoding=encoding)
         wafer_sig = _parse_filename_wafer_signature(file_path.name)
         temp_label = _parse_insertion_temperature_label(file_path.name)
+        report_file_label = _build_report_file_label(file_path.name, file_idx)
+        plot_folder_name = _build_plot_folder_name(file_path.name, file_idx)
 
         # Determine tests of interest by module prefix from Test Name row.
         interest_cols: list[str] = []
@@ -2503,9 +2539,9 @@ def generate_yield_cpk_report(
             continue
 
         # Create sheets.
-        sheet_name = _unique_sheet_name(file_path.stem, wb.sheetnames)
+        sheet_name = _unique_sheet_name(report_file_label, wb.sheetnames)
         ws = wb.create_sheet(sheet_name)
-        plot_sheet_name = _unique_sheet_name((file_path.stem[:25] + "_PLOTS"), wb.sheetnames)
+        plot_sheet_name = _unique_sheet_name(f"{report_file_label}_PLOTS", wb.sheetnames)
         ws_plots = wb.create_sheet(plot_sheet_name)
 
         # Tab colors: keep data vs plots tabs distinct.
@@ -2636,8 +2672,8 @@ def generate_yield_cpk_report(
 
             # Plot file and embed in plot sheet.
             safe_test = re.sub(r"[^A-Za-z0-9._-]+", "_", test_name)[:80] or test_col
-            plot_path = plots_root / file_path.stem / f"{test_col}_{safe_test}.png"
-            plot_zoomed_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_zoomed.png"
+            plot_path = plots_root / plot_folder_name / f"{test_col}_{safe_test}.png"
+            plot_zoomed_path = plots_root / plot_folder_name / f"{test_col}_{safe_test}_zoomed.png"
             include_sigma_limits = (
                 METRIC_CPK_LOW in assessment.metric_keys or METRIC_CPK_HIGH in assessment.metric_keys
             )
@@ -2663,7 +2699,7 @@ def generate_yield_cpk_report(
             )
 
             wafer_maps_supported = _supports_wafer_maps(file_path.name)
-            wafer_map_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_wafermap.png"
+            wafer_map_path = plots_root / plot_folder_name / f"{test_col}_{safe_test}_wafermap.png"
             if wafer_maps_supported:
                 _wafer_map_png(
                     numeric,
@@ -2675,7 +2711,7 @@ def generate_yield_cpk_report(
                     unit=unit,
                     median_v=float(np.median(finite)),
                 )
-            site_cdf_path = plots_root / file_path.stem / f"{test_col}_{safe_test}_cdf_by_site_zoomed.png"
+            site_cdf_path = plots_root / plot_folder_name / f"{test_col}_{safe_test}_cdf_by_site_zoomed.png"
             if METRIC_SITE_DELTA in metric_key_set:
                 _cdf_plot_by_site_png(
                     numeric,
@@ -2855,6 +2891,22 @@ def generate_yield_cpk_report(
                 mid_color="FFEB84",
                 end_type="max",
                 end_color="F8696B",
+            ),
+        )
+
+        cpk_col_idx = headers.index("Cpk") + 1
+        cpk_col_letter = _excel_col_letter(cpk_col_idx)
+        cpk_range = f"{cpk_col_letter}2:{cpk_col_letter}{1 + out_rows}"
+        ws.conditional_formatting.add(
+            cpk_range,
+            ColorScaleRule(
+                start_type="min",
+                start_color="F8696B",
+                mid_type="percentile",
+                mid_value=50,
+                mid_color="FFFFFF",
+                end_type="max",
+                end_color="5A8AC6",
             ),
         )
 

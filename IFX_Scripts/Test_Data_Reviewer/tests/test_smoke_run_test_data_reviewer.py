@@ -17,8 +17,8 @@ TEST_DATA_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
 SAMPLE_INPUT_DIR = TEST_DATA_ANALYSIS_DIR / "tests" / "smoke_input"
 SAMPLE_FILE_NAME = "smoke_Q2_sample.csv"
 OVERVIEW_SHEET_NAME = "Overview"
-SAMPLE_SHEET_NAME = "smoke_Q2_sample"
-SAMPLE_PLOTS_SHEET_NAME = "smoke_Q2_sample_PLOTS"
+SAMPLE_SHEET_NAME = "File1_Q2"
+SAMPLE_PLOTS_SHEET_NAME = "File1_Q2_PLOTS"
 
 
 class TestDataReviewerSmokeTest(unittest.TestCase):
@@ -172,6 +172,10 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                     "Expected Fails Count conditional formatting on column P",
                 )
                 self.assertTrue(
+                    any(str(rule.sqref) in {"G2", "G2:G2"} for rule in cf_rules),
+                    "Expected Cpk color scale conditional formatting on column G",
+                )
+                self.assertTrue(
                     any(str(rule.sqref) in {"H2", "H2:H2"} for rule in cf_rules),
                     "Expected Fails YES/NO conditional formatting on column H",
                 )
@@ -250,6 +254,73 @@ class TestDataReviewerSmokeTest(unittest.TestCase):
                     click_count += len(drawing_root.findall(f".//{{{drawing_ns}}}hlinkClick"))
 
                 self.assertGreaterEqual(click_count, 2, "Expected embedded plot images to have click hyperlinks")
+
+    def test_cli_uses_file_labels_for_dotted_names_and_spaces_module_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            input_dir = tmp_path / "input"
+            input_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(
+                SAMPLE_INPUT_DIR / SAMPLE_FILE_NAME,
+                input_dir / "alpha.1_S31P_sample.csv",
+            )
+            shutil.copy(
+                SAMPLE_INPUT_DIR / SAMPLE_FILE_NAME,
+                input_dir / "beta_S21P_sample.csv",
+            )
+
+            config_path = tmp_path / "config_smoke_two_files.yaml"
+            config_path.write_text(
+                textwrap.dedent(
+                    f"""\
+                    input_folder: {input_dir.as_posix()}
+                    modules:
+                      - TXPA
+                      - DPLL
+                    yield_threshold: 100.0
+                    cpk_low: 1.67
+                    cpk_high: 20.0
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, "run_test_data_reviewer.py", "--config", str(config_path)],
+                cwd=TEST_DATA_ANALYSIS_DIR,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=(
+                    "Two-file smoke test launcher failed.\n"
+                    f"STDOUT:\n{result.stdout}\n\n"
+                    f"STDERR:\n{result.stderr}"
+                ),
+            )
+
+            yield_report = input_dir / "Outputs" / "Test_Data_Reviewer_Report.xlsx"
+            self.assertTrue(yield_report.exists(), "Yield/Cpk report was not created for dotted filename smoke test")
+
+            workbook = load_workbook(yield_report, read_only=True, data_only=True)
+            try:
+                self.assertIn("File1_S31", workbook.sheetnames)
+                self.assertIn("File1_S31_PLOTS", workbook.sheetnames)
+                self.assertIn("File2_S21", workbook.sheetnames)
+                self.assertIn("File2_S21_PLOTS", workbook.sheetnames)
+
+                overview_worksheet = workbook[OVERVIEW_SHEET_NAME]
+                self.assertEqual(overview_worksheet["A22"].value, "alpha.1_S31P_sample.csv")
+                self.assertEqual(overview_worksheet["A23"].value, "alpha.1_S31P_sample.csv")
+                self.assertIsNone(overview_worksheet["A24"].value)
+                self.assertEqual(overview_worksheet["A25"].value, "beta_S21P_sample.csv")
+                self.assertEqual(overview_worksheet["A26"].value, "beta_S21P_sample.csv")
+            finally:
+                workbook.close()
 
 if __name__ == "__main__":
     unittest.main()

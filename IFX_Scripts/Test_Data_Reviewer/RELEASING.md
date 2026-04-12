@@ -18,7 +18,7 @@ This project now supports a simple release flow that packages `release_pyinstall
 Run from `IFX_Scripts/Test_Data_Reviewer`:
 
 ```powershell
-./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.3
 ```
 
 This is the recommended path for the official team release because your local machine can already reach the internal GitLab host.
@@ -67,7 +67,7 @@ $env:TDR_TEAM_REPO_USERNAME = "oauth2"
 $env:TDR_RELEASE_GIT_USER_NAME = "Wandji Lionel Wilfried (PSS RF D RAD PTE TE4)"
 $env:TDR_RELEASE_GIT_USER_EMAIL = "LionelWilfried.Wandji@infineon.com"
 
-./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.3
 ```
 
 ## Interactive release script
@@ -92,13 +92,13 @@ It can also be used non-interactively when values are already provided through p
 If you already built the release and want to reuse it:
 
 ```powershell
-./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2 -SkipBuild
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.3 -SkipBuild
 ```
 
 If you want to package locally without pushing to the team GitLab repo:
 
 ```powershell
-./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.2 -NoPush
+./publish_test_data_reviewer_release_interactive.ps1 -Version v1.0.3 -NoPush
 ```
 
 ## GitHub Actions automation
@@ -121,6 +121,7 @@ Use semantic versions for official releases:
 - `v1.0.0`
 - `v1.0.1`
 - `v1.0.2`
+- `v1.0.3`
 - `v1.1.0`
 
 The publish script enforces this format for team-repo publishes:
@@ -130,6 +131,7 @@ The publish script enforces this format for team-repo publishes:
 Examples:
 
 - `v1.0.2`
+- `v1.0.3`
 - `v2.3.0`
 
 If you use `-NoPush` for local packaging only, you can still use non-official draft-style version names.
@@ -146,8 +148,8 @@ Recommended documentation split:
 Recommended tagging command:
 
 ```powershell
-git tag tdr-v1.0.2
-git push origin tdr-v1.0.2
+git tag tdr-v1.0.3
+git push origin tdr-v1.0.3
 ```
 
-The workflow strips the `tdr-` prefix and packages the release as `v1.0.2`.
+The workflow strips the `tdr-` prefix and packages the release as `v1.0.3`.
