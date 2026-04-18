@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import tempfile
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -12,6 +14,7 @@ from matplotlib.figure import Figure
 from matplotlib.widgets import RectangleSelector
 
 import Test_Data_Reviewer as analysis
+import stdf_to_flat_csv
 
 
 METRIC_FILTER_OPTIONS = (
@@ -23,6 +26,57 @@ METRIC_FILTER_OPTIONS = (
     (analysis.METRIC_SKEWNESS, "Skewness"),
     (analysis.METRIC_MULTIMODALITY, "Multimodality"),
 )
+
+
+def _progress_status_text(phase: str, payload: dict[str, object]) -> str:
+    if phase == "input_selection_start":
+        total_selected = int(payload.get("total_selected", 0))
+        return f"Resolving {total_selected} selected input file(s)..."
+    if phase == "input_source_reused":
+        file_name = str(payload.get("file_name", ""))
+        csv_name = str(payload.get("csv_name", ""))
+        return f"Reusing existing CSV for {file_name}: {csv_name}"
+    if phase == "input_source_converting":
+        file_name = str(payload.get("file_name", ""))
+        index = int(payload.get("source_index", 0))
+        total = int(payload.get("total_sources", 0))
+        return f"Converting source file {index}/{total}: {file_name}"
+    if phase == "input_source_converted":
+        file_name = str(payload.get("file_name", ""))
+        return f"Converted source file: {file_name}"
+    if phase == "input_selection_done":
+        total_csv = int(payload.get("total_csv", 0))
+        return f"Selected input resolution complete: {total_csv} CSV file(s) ready"
+    if phase == "starting":
+        total_files = int(payload.get("total_files", 0))
+        return f"Preparing review dataset from {total_files} CSV file(s)..."
+    if phase == "file_start":
+        file_index = int(payload.get("file_index", 0))
+        total_files = int(payload.get("total_files", 0))
+        file_name = str(payload.get("file_name", ""))
+        return f"Reading file {file_index}/{total_files}: {file_name}"
+    if phase == "file_loading":
+        file_name = str(payload.get("file_name", ""))
+        candidate_tests = int(payload.get("candidate_tests", 0))
+        return f"Loading raw measurement data from {file_name} ({candidate_tests} candidate tests)"
+    if phase == "file_loaded":
+        file_name = str(payload.get("file_name", ""))
+        affected_tests = int(payload.get("affected_tests", 0))
+        return f"Assessing problematic tests in {file_name} ({affected_tests} affected tests)"
+    if phase == "test_progress":
+        file_name = str(payload.get("file_name", ""))
+        test_index = int(payload.get("test_index", 0))
+        total_tests = int(payload.get("total_tests", 0))
+        test_col = str(payload.get("test_col", ""))
+        return f"Processing test {test_index}/{total_tests} in {file_name}: {test_col}"
+    if phase == "file_done":
+        file_name = str(payload.get("file_name", ""))
+        findings_so_far = int(payload.get("findings_so_far", 0))
+        return f"Finished {file_name}; findings collected so far: {findings_so_far}"
+    if phase == "completed":
+        total_findings = int(payload.get("total_findings", 0))
+        return f"Analysis complete: {total_findings} problematic test(s) collected"
+    return phase
 
 
 class AnalysisProgressDialog(tk.Toplevel):
@@ -47,9 +101,9 @@ class AnalysisProgressDialog(tk.Toplevel):
         self.progress.start(12)
 
         self.update_idletasks()
-        self.geometry(f"+{master.winfo_rootx() + 140}+{master.winfo_rooty() + 140}")
 
     def update_status(self, phase: str, payload: dict[str, object]) -> None:
+        status_text = _progress_status_text(phase, payload)
         if phase == "starting":
             total_files = int(payload.get("total_files", 0))
             self.message_var.set("Preparing review dataset...")
@@ -86,9 +140,74 @@ class AnalysisProgressDialog(tk.Toplevel):
             total_findings = int(payload.get("total_findings", 0))
             self.message_var.set("Analysis complete")
             self.detail_var.set(f"Collected {total_findings} problematic test(s).")
+        else:
+            self.message_var.set(status_text)
+            self.detail_var.set("")
 
         self.update_idletasks()
 
+
+class DtrInfoWindow(tk.Toplevel):
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        dtr_tables: list[tuple[str, list[str], list[list[str]]]],
+    ) -> None:
+        super().__init__(master)
+        self.title("DTR infos")
+        self.geometry("980x620")
+        self.minsize(780, 420)
+        self._dtr_tables = dtr_tables
+
+        container = ttk.Frame(self, padding=10)
+        container.pack(fill="both", expand=True)
+
+        ttk.Label(container, text="Input file").grid(row=0, column=0, sticky="w")
+        self.selected_file_var = tk.StringVar(value=dtr_tables[0][0])
+        selector = ttk.Combobox(
+            container,
+            state="readonly",
+            textvariable=self.selected_file_var,
+            values=[item[0] for item in dtr_tables],
+            width=72,
+        )
+        selector.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        selector.bind("<<ComboboxSelected>>", self._on_selection_change)
+
+        table_frame = ttk.Frame(container)
+        table_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+
+        self.table = ttk.Treeview(table_frame, show="headings")
+        scroll_y = tk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
+        scroll_x = tk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
+        self.table.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.table.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        container.rowconfigure(1, weight=1)
+        container.columnconfigure(1, weight=1)
+        self.update_idletasks()
+        self.geometry(f"+{self.master.winfo_rootx() + 140}+{self.master.winfo_rooty() + 140}")
+
+        self._render_selected_table(dtr_tables[0][0])
+
+    def _on_selection_change(self, _event) -> None:
+        self._render_selected_table(self.selected_file_var.get())
+
+    def _render_selected_table(self, file_name: str) -> None:
+        selected = next(item for item in self._dtr_tables if item[0] == file_name)
+        _, headers, rows = selected
+        self.table.delete(*self.table.get_children())
+        self.table["columns"] = headers
+        for header in headers:
+            self.table.heading(header, text=header)
+            self.table.column(header, anchor="w", width=max(120, min(420, len(header) * 10 + 40)))
+        for row in rows:
+            self.table.insert("", "end", values=row)
 
 class TestDataReviewerGui(tk.Tk):
     def __init__(self) -> None:
@@ -104,15 +223,16 @@ class TestDataReviewerGui(tk.Tk):
         self._cdf_selector: RectangleSelector | None = None
         self._cdf_default_xlim: tuple[float, float] | None = None
         self._cdf_default_ylim: tuple[float, float] | None = None
+        self.selected_input_paths: list[Path] = []
+        self._dtr_info_cache: dict[str, tuple[list[str], list[list[str]]] | None] = {}
 
-        self.input_folder_var = tk.StringVar()
-        self.modules_var = tk.StringVar(value="TXPA,DPLL,TXLO,TXPD")
+        self.input_selection_var = tk.StringVar()
         self.yield_threshold_var = tk.StringVar(value="100.0")
         self.cpk_low_var = tk.StringVar(value="1.67")
         self.cpk_high_var = tk.StringVar(value="20.0")
         self.outlier_mad_var = tk.StringVar(value="6.0")
-        self.single_file_var = tk.StringVar()
-        self.status_var = tk.StringVar(value="Choose an input folder and click Analyze dataset.")
+        self.waterfall_cleanup_var = tk.BooleanVar(value=True)
+        self.status_var = tk.StringVar(value="Choose one or more input files and click Analyze Dataset.")
         self.hover_var = tk.StringVar(value="Hover inside a plot to inspect a data point.")
         self.decision_var = tk.StringVar(value=analysis.REVIEW_DECISION_UNREVIEWED)
         self.metric_filter_vars = {
@@ -130,17 +250,17 @@ class TestDataReviewerGui(tk.Tk):
         config_frame = ttk.LabelFrame(root, text="Review setup", padding=10)
         config_frame.pack(fill="x")
 
-        ttk.Label(config_frame, text="Input folder").grid(row=0, column=0, sticky="w")
-        ttk.Entry(config_frame, textvariable=self.input_folder_var, width=100).grid(row=0, column=1, sticky="ew", padx=(8, 8))
-        ttk.Button(config_frame, text="Browse", command=self._browse_input_folder).grid(row=0, column=2, sticky="ew")
-
-        ttk.Label(config_frame, text="Modules").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(config_frame, textvariable=self.modules_var, width=40).grid(row=1, column=1, sticky="w", padx=(8, 8), pady=(8, 0))
-        ttk.Label(config_frame, text="Single file (optional)").grid(row=1, column=2, sticky="w", pady=(8, 0))
-        ttk.Entry(config_frame, textvariable=self.single_file_var, width=28).grid(row=1, column=3, sticky="w", pady=(8, 0))
+        ttk.Label(config_frame, text="Input files").grid(row=0, column=0, sticky="w")
+        ttk.Entry(config_frame, textvariable=self.input_selection_var, width=100).grid(row=0, column=1, columnspan=4, sticky="ew", padx=(8, 8))
+        top_button_frame = ttk.Frame(config_frame)
+        top_button_frame.grid(row=0, column=5, columnspan=4, sticky="e")
+        ttk.Button(top_button_frame, text="Browse", command=self._browse_input_files).pack(side="left")
+        ttk.Button(top_button_frame, text="Analyze Dataset", command=self._analyze_dataset).pack(side="left", padx=(4, 0))
+        ttk.Button(top_button_frame, text="Show DTR infos", command=self._show_dtr_infos).pack(side="left", padx=(12, 0))
+        ttk.Button(top_button_frame, text="Generate Excel report", command=self._export_report).pack(side="left", padx=(4, 0))
 
         threshold_frame = ttk.Frame(config_frame)
-        threshold_frame.grid(row=1, column=4, columnspan=4, sticky="w", padx=(16, 0), pady=(8, 0))
+        threshold_frame.grid(row=1, column=0, columnspan=9, sticky="w", pady=(8, 0))
         ttk.Label(threshold_frame, text="Yield").grid(row=0, column=0, sticky="w")
         ttk.Entry(threshold_frame, textvariable=self.yield_threshold_var, width=8).grid(row=0, column=1, sticky="w", padx=(4, 10))
         ttk.Label(threshold_frame, text="Cpk low").grid(row=0, column=2, sticky="w")
@@ -149,27 +269,28 @@ class TestDataReviewerGui(tk.Tk):
         ttk.Entry(threshold_frame, textvariable=self.cpk_high_var, width=8).grid(row=0, column=5, sticky="w", padx=(4, 10))
         ttk.Label(threshold_frame, text="Outlier MAD").grid(row=0, column=6, sticky="w")
         ttk.Entry(threshold_frame, textvariable=self.outlier_mad_var, width=8).grid(row=0, column=7, sticky="w", padx=(4, 0))
+        ttk.Checkbutton(
+            threshold_frame,
+            text="Waterfall clean-up",
+            variable=self.waterfall_cleanup_var,
+        ).grid(row=0, column=8, sticky="w", padx=(18, 0))
 
         metric_frame = ttk.LabelFrame(config_frame, text="Metric filters", padding=8)
-        metric_frame.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        metric_frame.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(10, 0))
         for index, (metric_key, label) in enumerate(METRIC_FILTER_OPTIONS):
-            row_idx = index // 4
-            col_idx = (index % 4) * 2
+            col_idx = index * 2
             ttk.Checkbutton(
                 metric_frame,
                 variable=self.metric_filter_vars[metric_key],
                 command=self._apply_metric_filters,
-            ).grid(row=row_idx, column=col_idx, sticky="w")
-            ttk.Label(metric_frame, text=label).grid(row=row_idx, column=col_idx + 1, sticky="w", padx=(2, 12), pady=2)
+            ).grid(row=0, column=col_idx, sticky="w")
+            ttk.Label(metric_frame, text=label).grid(row=0, column=col_idx + 1, sticky="w", padx=(2, 12), pady=2)
 
-        button_frame = ttk.Frame(config_frame)
-        button_frame.grid(row=2, column=6, columnspan=3, sticky="e", padx=(12, 0), pady=(10, 0))
-        ttk.Button(button_frame, text="Analyze dataset", command=self._analyze_dataset).pack(side="left")
-        ttk.Button(button_frame, text="Generate Excel report", command=self._export_report).pack(side="left", padx=(8, 0))
-        ttk.Button(button_frame, text="Reset CDF zoom", command=self._reset_cdf_zoom).pack(side="left", padx=(8, 0))
+        ttk.Button(config_frame, text="Reset CDF zoom", command=self._reset_cdf_zoom).grid(row=2, column=8, sticky="e", pady=(10, 0))
 
         config_frame.columnconfigure(1, weight=1)
         config_frame.columnconfigure(5, weight=1)
+        config_frame.columnconfigure(8, weight=1)
 
         content = ttk.Panedwindow(root, orient="horizontal")
         content.pack(fill="both", expand=True, pady=(12, 0))
@@ -188,7 +309,7 @@ class TestDataReviewerGui(tk.Tk):
             file_filter_list_frame,
             selectmode="extended",
             exportselection=False,
-            height=6,
+            height=5,
         )
         file_filter_scroll = tk.Scrollbar(file_filter_list_frame, orient="vertical", command=self.file_filter_listbox.yview)
         self.file_filter_listbox.configure(yscrollcommand=file_filter_scroll.set)
@@ -196,6 +317,24 @@ class TestDataReviewerGui(tk.Tk):
         file_filter_scroll.pack(side="right", fill="y")
         self.file_filter_listbox.bind("<<ListboxSelect>>", self._on_file_filter_change)
         ttk.Button(file_filter_frame, text="Clear file filter", command=self._clear_file_filter).pack(anchor="e", pady=(6, 0))
+
+        module_filter_frame = ttk.LabelFrame(left_frame, text="Test module filter", padding=10)
+        module_filter_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(module_filter_frame, text="Modules are detected from the first four characters of each test name.").pack(anchor="w")
+        module_filter_list_frame = ttk.Frame(module_filter_frame)
+        module_filter_list_frame.pack(fill="x", pady=(6, 0))
+        self.module_filter_listbox = tk.Listbox(
+            module_filter_list_frame,
+            selectmode="extended",
+            exportselection=False,
+            height=5,
+        )
+        module_filter_scroll = tk.Scrollbar(module_filter_list_frame, orient="vertical", command=self.module_filter_listbox.yview)
+        self.module_filter_listbox.configure(yscrollcommand=module_filter_scroll.set)
+        self.module_filter_listbox.pack(side="left", fill="x", expand=True)
+        module_filter_scroll.pack(side="right", fill="y")
+        self.module_filter_listbox.bind("<<ListboxSelect>>", self._on_module_filter_change)
+        ttk.Button(module_filter_frame, text="Clear module filter", command=self._clear_module_filter).pack(anchor="e", pady=(6, 0))
 
         tree_frame = ttk.LabelFrame(left_frame, text="Problematic tests", padding=8)
         tree_frame.pack(fill="both", expand=True)
@@ -275,48 +414,86 @@ class TestDataReviewerGui(tk.Tk):
         status_bar = ttk.Label(root, textvariable=self.status_var, relief="sunken", anchor="w")
         status_bar.pack(fill="x", pady=(10, 0))
 
-    def _browse_input_folder(self) -> None:
-        selected = filedialog.askdirectory(title="Select input folder")
-        if selected:
-            self.input_folder_var.set(selected)
+    def _browse_input_files(self) -> None:
+        initial_dir = None
+        if self.selected_input_paths:
+            initial_dir = str(self.selected_input_paths[0].parent)
 
-    def _parse_modules(self) -> list[str]:
-        raw = self.modules_var.get().replace(";", ",")
-        modules = [part.strip().upper() for part in raw.split(",") if part.strip()]
-        if not modules:
-            raise ValueError("Provide at least one module, for example TXPA,DPLL")
-        return modules
+        selected = filedialog.askopenfilenames(
+            title="Select input files",
+            initialdir=initial_dir,
+            filetypes=[
+                (
+                    "Supported input files",
+                    (
+                        "*.csv",
+                        "*.stdf",
+                        "*.std",
+                        "*.eff",
+                        "*.stdf.gz",
+                        "*.stdf.xz",
+                        "*.stdf.bz2",
+                        "*.std.gz",
+                        "*.std.xz",
+                        "*.std.bz2",
+                        "*.stdf.tar.gz",
+                        "*.std.tar.gz",
+                    ),
+                ),
+                ("CSV files", ("*.csv",)),
+                ("STDF/EFF files", ("*.stdf", "*.std", "*.eff", "*.stdf.gz", "*.stdf.xz", "*.stdf.bz2", "*.std.gz", "*.std.xz", "*.std.bz2", "*.stdf.tar.gz", "*.std.tar.gz")),
+                ("All files", ("*.*",)),
+            ],
+        )
+        if not selected:
+            return
+
+        self.selected_input_paths = [Path(path) for path in selected]
+        self._dtr_info_cache.clear()
+        selected_names = [path.name for path in self.selected_input_paths]
+        if len(selected_names) <= 3:
+            display = "; ".join(selected_names)
+        else:
+            display = f"{len(selected_names)} files selected | " + "; ".join(selected_names[:3]) + " ..."
+        self.input_selection_var.set(display)
 
     def _analyze_dataset(self) -> None:
         progress_dialog: AnalysisProgressDialog | None = None
         try:
-            input_folder = Path(self.input_folder_var.get().strip())
-            if not input_folder.is_dir():
-                raise ValueError("Choose a valid input folder")
+            if not self.selected_input_paths:
+                raise ValueError("Choose one or more input files")
 
             progress_dialog = AnalysisProgressDialog(self)
-            self.status_var.set("Preparing review dataset...")
+            self.status_var.set("Preparing selected input files...")
 
             def _progress_callback(phase: str, payload: dict[str, object]) -> None:
+                status_text = _progress_status_text(phase, payload)
+                self.status_var.set(status_text)
+                self.update_idletasks()
                 if progress_dialog is not None and progress_dialog.winfo_exists():
                     progress_dialog.update_status(phase, payload)
+
+            input_folder, selected_csv_paths = self._resolve_selected_analysis_csv_paths(progress_callback=_progress_callback)
 
             dataset = analysis.collect_review_dataset(
                 input_folder=input_folder,
                 output_folder=input_folder / "Outputs",
-                modules=self._parse_modules(),
+                modules=None,
                 outlier_mad_multiplier=float(self.outlier_mad_var.get().strip()),
                 yield_threshold=float(self.yield_threshold_var.get().strip()),
                 cpk_low=float(self.cpk_low_var.get().strip()),
                 cpk_high=float(self.cpk_high_var.get().strip()),
                 max_files=None,
-                single_file=(self.single_file_var.get().strip() or None),
+                single_file=None,
+                selected_csv_paths=selected_csv_paths,
                 encoding=analysis.DEFAULT_ENCODING,
                 progress_callback=_progress_callback,
+                waterfall_cleanup_enabled=self.waterfall_cleanup_var.get(),
             )
         except Exception as exc:
             if progress_dialog is not None and progress_dialog.winfo_exists():
                 progress_dialog.destroy()
+            self.status_var.set(f"Analysis failed: {exc}")
             messagebox.showerror("Analysis failed", str(exc))
             return
 
@@ -327,17 +504,234 @@ class TestDataReviewerGui(tk.Tk):
         self._plot_data_cache.clear()
         self._finding_by_iid.clear()
         self._populate_file_filter_list(dataset.processed_files)
+        self._populate_module_filter_list(dataset.available_modules)
         self._apply_metric_filters()
         total_filters = len(dataset.findings)
+        cleanup_state = "on" if dataset.waterfall_cleanup_enabled else "off"
         self.status_var.set(
-            f"Loaded {total_filters} problematic test(s) from {len(dataset.processed_files)} processed file(s)."
+            f"Loaded {total_filters} problematic test(s) from {len(dataset.processed_files)} processed file(s); {len(dataset.available_modules)} module(s) detected; waterfall clean-up {cleanup_state}."
         )
+
+    def _selected_std_input_paths(self) -> list[Path]:
+        std_paths: list[Path] = []
+        for path in self.selected_input_paths:
+            if path.suffix.lower() == ".csv":
+                continue
+            if stdf_to_flat_csv._source_kind_for_name(path.name) != "stdf":
+                continue
+            std_paths.append(path)
+        return std_paths
+
+    def _load_dtr_table_for_source(self, source_path: Path) -> tuple[list[str], list[list[str]]] | None:
+        cache_key = str(source_path.resolve()).lower()
+        if cache_key in self._dtr_info_cache:
+            return self._dtr_info_cache[cache_key]
+
+        artifacts_folder = source_path.parent / "Outputs" / "Artifacts"
+        dtr_path = artifacts_folder / stdf_to_flat_csv.dtr_name_for_source(source_path.name)
+        if not dtr_path.is_file():
+            with tempfile.TemporaryDirectory(prefix="tdr_dtr_") as tmp_dir:
+                tmp_root = Path(tmp_dir)
+                summary = stdf_to_flat_csv.convert_stdf_file(
+                    source_path,
+                    tmp_root / stdf_to_flat_csv.csv_name_for_source(source_path.name),
+                    artifacts_output_folder=tmp_root,
+                )
+                if not summary.dtr_files:
+                    self._dtr_info_cache[cache_key] = None
+                    return None
+                dtr_path = summary.dtr_files[0]
+                with dtr_path.open("r", encoding="utf-8", newline="") as handle:
+                    reader = csv.reader(handle, delimiter=stdf_to_flat_csv.DELIMITER)
+                    rows = list(reader)
+                if not rows:
+                    self._dtr_info_cache[cache_key] = None
+                    return None
+                headers = [str(item) for item in rows[0]]
+                body = [[str(item) for item in row] for row in rows[1:]]
+                self._dtr_info_cache[cache_key] = (headers, body)
+                return self._dtr_info_cache[cache_key]
+
+        with dtr_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle, delimiter=stdf_to_flat_csv.DELIMITER)
+            rows = list(reader)
+        if not rows:
+            self._dtr_info_cache[cache_key] = None
+            return None
+        headers = [str(item) for item in rows[0]]
+        body = [[str(item) for item in row] for row in rows[1:]]
+        self._dtr_info_cache[cache_key] = (headers, body)
+        return self._dtr_info_cache[cache_key]
+
+    def _show_dtr_infos(self) -> None:
+        std_input_paths = self._selected_std_input_paths()
+        if not std_input_paths:
+            messagebox.showwarning(
+                "No DTR infos available",
+                "No DTR infos could be extracted from the selected input files. STD input files are required for that.",
+            )
+            return
+
+        dtr_tables: list[tuple[str, list[str], list[list[str]]]] = []
+        for source_path in std_input_paths:
+            table = self._load_dtr_table_for_source(source_path)
+            if table is None:
+                continue
+            headers, rows = table
+            dtr_tables.append((source_path.name, headers, rows))
+
+        if not dtr_tables:
+            messagebox.showwarning(
+                "No DTR infos available",
+                "No DTR infos could be extracted from the selected input files. STD input files are required for that.",
+            )
+            return
+
+        DtrInfoWindow(self, dtr_tables=dtr_tables)
+
+    def _existing_csv_for_selected_source(self, source_path: Path) -> Path | None:
+        candidate_paths: list[Path] = []
+        stripped_name = source_path.name
+        suffixes = Path(stripped_name).suffixes
+        while suffixes and suffixes[-1].lower() in (
+            stdf_to_flat_csv.COMPRESSED_SUFFIXES
+            | stdf_to_flat_csv.ARCHIVE_SUFFIXES
+            | stdf_to_flat_csv.SUPPORTED_INPUT_SUFFIXES
+        ):
+            stripped_name = Path(stripped_name).with_suffix("").name
+            candidate_paths.append(source_path.parent / f"{stripped_name}.csv")
+            suffixes = Path(stripped_name).suffixes
+
+        candidate_paths.append(source_path.parent / stdf_to_flat_csv.csv_name_for_source(source_path.name))
+
+        seen: set[str] = set()
+        for candidate_path in candidate_paths:
+            key = str(candidate_path.resolve()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate_path.is_file() and analysis._is_analysis_input_csv_path(candidate_path):
+                return candidate_path
+        return None
+
+    def _resolve_selected_analysis_csv_paths(
+        self,
+        progress_callback: callable | None = None,
+    ) -> tuple[Path, list[Path]]:
+        selected_paths = [Path(path) for path in self.selected_input_paths]
+        if not selected_paths:
+            raise ValueError("Choose one or more input files")
+
+        if progress_callback is not None:
+            progress_callback(
+                "input_selection_start",
+                {"total_selected": len(selected_paths)},
+            )
+
+        parent_folders = {path.parent.resolve() for path in selected_paths}
+        if len(parent_folders) != 1:
+            raise ValueError("Select input files from the same folder")
+
+        input_folder = next(iter(parent_folders))
+        csv_paths: list[Path] = []
+        pending_source_paths: list[Path] = []
+
+        for path in selected_paths:
+            if not path.is_file():
+                raise FileNotFoundError(f"Selected input file not found: {path}")
+            if path.suffix.lower() == ".csv":
+                if not analysis._is_analysis_input_csv_path(path):
+                    continue
+                csv_paths.append(path)
+                continue
+
+            existing_csv = self._existing_csv_for_selected_source(path)
+            if existing_csv is not None and existing_csv.is_file():
+                csv_paths.append(existing_csv)
+                if progress_callback is not None:
+                    progress_callback(
+                        "input_source_reused",
+                        {
+                            "file_name": path.name,
+                            "csv_name": existing_csv.name,
+                        },
+                    )
+            else:
+                pending_source_paths.append(path)
+
+        if pending_source_paths:
+            artifacts_folder = input_folder / "Outputs" / "Artifacts"
+            converted_csv_paths: list[Path] = []
+            total_sources = len(pending_source_paths)
+            for source_index, source_path in enumerate(pending_source_paths, start=1):
+                if progress_callback is not None:
+                    progress_callback(
+                        "input_source_converting",
+                        {
+                            "file_name": source_path.name,
+                            "source_index": source_index,
+                            "total_sources": total_sources,
+                        },
+                    )
+                try:
+                    summary = stdf_to_flat_csv.convert_stdf_file(
+                        source_path,
+                        input_folder / stdf_to_flat_csv.csv_name_for_source(source_path.name),
+                        artifacts_output_folder=artifacts_folder,
+                    )
+                except Exception as exc:
+                    reason = str(exc).strip() or exc.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to convert selected input file '{source_path.name}' to CSV. Reason: {reason}"
+                    ) from exc
+                converted_csv_paths.extend(summary.output_files)
+                if progress_callback is not None:
+                    progress_callback(
+                        "input_source_converted",
+                        {"file_name": source_path.name},
+                    )
+
+            if not converted_csv_paths:
+                raise RuntimeError("No STDF/EFF input files were converted into CSV")
+            csv_paths.extend(converted_csv_paths)
+
+        unique_csv_paths: list[Path] = []
+        seen_paths: set[str] = set()
+        for path in csv_paths:
+            resolved = str(path.resolve()).lower()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            unique_csv_paths.append(path)
+
+        if not unique_csv_paths:
+            raise RuntimeError("No supported CSV/STDF/EFF input files were selected")
+
+        if progress_callback is not None:
+            progress_callback(
+                "input_selection_done",
+                {"total_csv": len(unique_csv_paths)},
+            )
+
+        return input_folder, unique_csv_paths
 
     def _selected_finding(self) -> analysis.ReviewFinding | None:
         selected = self.tree.selection()
         if not selected:
             return None
         return self._finding_by_iid.get(selected[0])
+
+    def _cleanup_summary_for_finding(
+        self,
+        finding: analysis.ReviewFinding,
+    ) -> analysis.ReviewCleanupFunctionSummary | None:
+        if self.dataset is None:
+            return None
+        file_summaries = self.dataset.cleanup_summaries_by_file.get(finding.file_name, ())
+        for summary in file_summaries:
+            if int(summary.function_index) == int(finding.function_index):
+                return summary
+        return None
 
     def _active_metric_filters(self) -> set[str]:
         return {
@@ -350,16 +744,32 @@ class TestDataReviewerGui(tk.Tk):
         selected_indices = self.file_filter_listbox.curselection()
         return {str(self.file_filter_listbox.get(index)) for index in selected_indices}
 
+    def _selected_module_filters(self) -> set[str]:
+        selected_indices = self.module_filter_listbox.curselection()
+        return {str(self.module_filter_listbox.get(index)) for index in selected_indices}
+
     def _populate_file_filter_list(self, file_names: tuple[str, ...]) -> None:
         self.file_filter_listbox.delete(0, "end")
         for file_name in file_names:
             self.file_filter_listbox.insert("end", file_name)
 
+    def _populate_module_filter_list(self, module_names: tuple[str, ...]) -> None:
+        self.module_filter_listbox.delete(0, "end")
+        for module_name in module_names:
+            self.module_filter_listbox.insert("end", module_name)
+
     def _clear_file_filter(self) -> None:
         self.file_filter_listbox.selection_clear(0, "end")
         self._apply_metric_filters()
 
+    def _clear_module_filter(self) -> None:
+        self.module_filter_listbox.selection_clear(0, "end")
+        self._apply_metric_filters()
+
     def _on_file_filter_change(self, _event) -> None:
+        self._apply_metric_filters()
+
+    def _on_module_filter_change(self, _event) -> None:
         self._apply_metric_filters()
 
     def _filtered_findings(self) -> list[analysis.ReviewFinding]:
@@ -367,9 +777,12 @@ class TestDataReviewerGui(tk.Tk):
             return []
         active_filters = self._active_metric_filters()
         selected_files = self._selected_file_filters()
+        selected_modules = self._selected_module_filters()
         filtered = list(self.dataset.findings)
         if selected_files:
             filtered = [finding for finding in filtered if finding.file_name in selected_files]
+        if selected_modules:
+            filtered = [finding for finding in filtered if finding.module in selected_modules]
         if active_filters:
             filtered = [
                 finding
@@ -412,10 +825,12 @@ class TestDataReviewerGui(tk.Tk):
         if self.dataset is not None:
             active_filters = self._active_metric_filters()
             selected_files = self._selected_file_filters()
+            selected_modules = self._selected_module_filters()
             metric_suffix = "all metrics" if not active_filters else f"{len(active_filters)} metric filter(s) active"
             file_suffix = "all files" if not selected_files else f"{len(selected_files)} file filter(s) active"
+            module_suffix = "all modules" if not selected_modules else f"{len(selected_modules)} module filter(s) active"
             self.status_var.set(
-                f"Showing {len(filtered_findings)} of {len(self.dataset.findings)} problematic test(s); {metric_suffix}; {file_suffix}."
+                f"Showing {len(filtered_findings)} of {len(self.dataset.findings)} problematic test(s); {metric_suffix}; {file_suffix}; {module_suffix}."
             )
 
         preferred_item_id = None
@@ -433,10 +848,10 @@ class TestDataReviewerGui(tk.Tk):
             self.tree.focus(preferred_item_id)
             self._on_tree_select(None)
         else:
-            self.summary_label.configure(text="No problematic test matches the current metric filters.")
+            self.summary_label.configure(text="No problematic test matches the current file, module, and metric filters.")
             self.findings_text.delete("1.0", "end")
             self.notes_text.delete("1.0", "end")
-            self._draw_placeholder_plots("No problematic test matches the current metric filters.")
+            self._draw_placeholder_plots("No problematic test matches the current file, module, and metric filters.")
 
     def _on_tree_select(self, _event) -> None:
         finding = self._selected_finding()
@@ -444,6 +859,16 @@ class TestDataReviewerGui(tk.Tk):
             return
 
         self.decision_var.set(analysis._normalize_review_decision(finding.decision))
+        cleanup_summary = self._cleanup_summary_for_finding(finding)
+        cleanup_lines = [
+            f"Function: {finding.function_index} - {finding.function_label or 'N/A'}",
+            f"Cleanup before function: {finding.cleanup_removed_before_review} chip(s) already removed",
+        ]
+        if cleanup_summary is not None:
+            cleanup_lines.append(
+                f"Cleanup after function: removed {cleanup_summary.removed_chip_count} chip(s) | remaining active chips: {cleanup_summary.remaining_chip_count}"
+            )
+
         self.summary_label.configure(
             text=(
                 f"File: {finding.file_name}\n"
@@ -452,7 +877,8 @@ class TestDataReviewerGui(tk.Tk):
                 f"Status: {finding.status}\n"
                 f"Priority: {finding.priority}\n"
                 f"Temp: {finding.temp_label}\n"
-                f"Fails: {finding.fail_chips} | Outliers: {finding.outliers} | N: {finding.sample_count}"
+                f"Fails: {finding.fail_chips} | Outliers: {finding.outliers} | N: {finding.sample_count}\n"
+                + "\n".join(cleanup_lines)
             )
         )
         self.findings_text.delete("1.0", "end")

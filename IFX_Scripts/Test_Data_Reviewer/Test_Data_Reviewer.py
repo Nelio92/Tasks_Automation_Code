@@ -509,6 +509,188 @@ def _module_from_test_name(test_name: str) -> str:
     return s[:4].upper()
 
 
+def _ordered_modules_from_test_names(test_names: Iterable[str]) -> tuple[str, ...]:
+    modules: list[str] = []
+    seen: set[str] = set()
+    for test_name in test_names:
+        module = _module_from_test_name(test_name)
+        if not module or module in seen:
+            continue
+        seen.add(module)
+        modules.append(module)
+    return tuple(modules)
+
+
+def _is_test_function_time_marker(test_name: str, unit: str | None) -> bool:
+    normalized_name = _shorten_test_name(test_name).upper()
+    normalized_unit = str(unit or "").strip().lower()
+    return "_S980" in normalized_name and normalized_unit in {"ms", "s"}
+
+
+def _build_test_function_index_by_name(meta: FlatFileMeta) -> dict[str, int]:
+    function_index_by_name: dict[str, int] = {}
+    current_function_index = 1
+
+    for test_col in meta.numeric_test_cols:
+        test_name = _test_name_from_meta(meta, test_col)
+        if test_name:
+            function_index_by_name.setdefault(test_name, current_function_index)
+
+        unit = meta.meta_rows.get("Unit", {}).get(test_col)
+        if _is_test_function_time_marker(test_name, unit):
+            current_function_index += 1
+
+    return function_index_by_name
+
+
+@dataclass(frozen=True)
+class TestFunctionSegment:
+    index: int
+    label: str
+    all_test_names: tuple[str, ...]
+    review_test_cols: tuple[str, ...]
+
+
+def _build_test_function_segments(
+    meta: FlatFileMeta,
+    *,
+    test_name_by_col: dict[str, str] | None = None,
+) -> tuple[tuple[TestFunctionSegment, ...], dict[str, int]]:
+    name_by_col = test_name_by_col or {test_col: _test_name_from_meta(meta, test_col) for test_col in meta.numeric_test_cols}
+    function_index_by_name: dict[str, int] = {}
+    segments: list[TestFunctionSegment] = []
+    current_index = 1
+    current_all_test_names: list[str] = []
+    current_review_test_cols: list[str] = []
+    current_label: str | None = None
+
+    for test_col in meta.numeric_test_cols:
+        test_name = name_by_col.get(test_col, "")
+        if test_name:
+            current_all_test_names.append(test_name)
+            function_index_by_name.setdefault(test_name, current_index)
+
+        unit = meta.meta_rows.get("Unit", {}).get(test_col)
+        is_time_marker = _is_test_function_time_marker(test_name, unit)
+        if not is_time_marker:
+            current_review_test_cols.append(test_col)
+        else:
+            current_label = test_name
+
+        if not is_time_marker:
+            continue
+
+        label = current_label or next((name for name in current_all_test_names if name), f"Function {current_index}")
+        segments.append(
+            TestFunctionSegment(
+                index=current_index,
+                label=label,
+                all_test_names=tuple(current_all_test_names),
+                review_test_cols=tuple(current_review_test_cols),
+            )
+        )
+        current_index += 1
+        current_all_test_names = []
+        current_review_test_cols = []
+        current_label = None
+
+    if current_all_test_names or current_review_test_cols:
+        label = current_label or next((name for name in current_all_test_names if name), f"Function {current_index}")
+        segments.append(
+            TestFunctionSegment(
+                index=current_index,
+                label=label,
+                all_test_names=tuple(current_all_test_names),
+                review_test_cols=tuple(current_review_test_cols),
+            )
+        )
+
+    return tuple(segments), function_index_by_name
+
+
+def _cleanup_removal_mask_for_function(
+    meta_cols,
+    *,
+    function_test_names: Collection[str],
+):
+    import pandas as pd
+
+    if getattr(meta_cols, "empty", True):
+        return pd.Series(False, index=getattr(meta_cols, "index", None), dtype=bool)
+    if "FIRST_FAIL_TEST" not in meta_cols.columns:
+        return pd.Series(False, index=meta_cols.index, dtype=bool)
+
+    normalized_test_names = {_shorten_test_name(name) for name in function_test_names if _shorten_test_name(name)}
+    if not normalized_test_names:
+        return pd.Series(False, index=meta_cols.index, dtype=bool)
+
+    return meta_cols["FIRST_FAIL_TEST"].fillna("").map(
+        lambda test_name: _shorten_test_name(str(test_name)) in normalized_test_names
+    ).astype(bool)
+
+
+def _waterfall_cleanup_mask(
+    meta_cols,
+    *,
+    current_test_name: str,
+    function_index_by_test_name: dict[str, int],
+):
+    import pandas as pd
+
+    if getattr(meta_cols, "empty", True):
+        return pd.Series(True, index=getattr(meta_cols, "index", None), dtype=bool)
+    if "FIRST_FAIL_TEST" not in meta_cols.columns:
+        return pd.Series(True, index=meta_cols.index, dtype=bool)
+
+    current_rank = function_index_by_test_name.get(_shorten_test_name(current_test_name))
+    if current_rank is None:
+        return pd.Series(True, index=meta_cols.index, dtype=bool)
+
+    earlier_fail_mask = meta_cols["FIRST_FAIL_TEST"].fillna("").map(
+        lambda test_name: bool(str(test_name).strip())
+        and function_index_by_test_name.get(_shorten_test_name(str(test_name)), current_rank) < current_rank
+    )
+    return ~earlier_fail_mask.astype(bool)
+
+
+def _yield_cpk_from_series(
+    series,
+    *,
+    low_limit: float | None,
+    high_limit: float | None,
+) -> tuple[float | None, float | None]:
+    import numpy as np
+    import pandas as pd
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    finite = numeric.dropna().to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None, None
+
+    yield_pct: float | None = None
+    if low_limit is not None or high_limit is not None:
+        low_eval = -np.inf if low_limit is None else float(low_limit)
+        high_eval = np.inf if high_limit is None else float(high_limit)
+        pass_count = int(((finite >= low_eval) & (finite <= high_eval)).sum())
+        yield_pct = 100.0 * pass_count / float(finite.size)
+
+    cpk: float | None = None
+    sigma = float(np.std(finite, ddof=1)) if finite.size >= 2 else 0.0
+    if np.isfinite(sigma) and sigma > 0:
+        mean_value = float(np.mean(finite))
+        cpk_candidates: list[float] = []
+        if low_limit is not None:
+            cpk_candidates.append((mean_value - float(low_limit)) / (3.0 * sigma))
+        if high_limit is not None:
+            cpk_candidates.append((float(high_limit) - mean_value) / (3.0 * sigma))
+        finite_candidates = [value for value in cpk_candidates if math.isfinite(value)]
+        if finite_candidates:
+            cpk = float(min(finite_candidates))
+
+    return yield_pct, cpk
+
+
 @dataclass(frozen=True)
 class FlatFileMeta:
     header: list[str]
@@ -581,8 +763,11 @@ def _collect_analysis_csv_paths(
     *,
     single_file: str | None,
     max_files: int | None,
+    selected_csv_paths: Iterable[Path] | None = None,
 ) -> list[Path]:
-    if single_file:
+    if selected_csv_paths is not None:
+        csv_paths = [Path(path) for path in selected_csv_paths if _is_analysis_input_csv_path(Path(path))]
+    elif single_file:
         csv_paths = [input_folder / single_file]
     else:
         csv_paths = sorted(
@@ -1573,8 +1758,21 @@ class ReviewFinding:
     ltl_12s: float | None
     utl_12s: float | None
     temp_label: str
+    function_index: int = 0
+    function_label: str = ""
+    cleanup_removed_before_review: int = 0
     decision: str = REVIEW_DECISION_UNREVIEWED
     te_notes: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewCleanupFunctionSummary:
+    file_name: str
+    function_index: int
+    function_label: str
+    reviewed_test_count: int
+    removed_chip_count: int
+    remaining_chip_count: int
 
 
 @dataclass(frozen=True)
@@ -1582,14 +1780,17 @@ class ReviewDataset:
     input_folder: Path
     output_folder: Path
     modules: tuple[str, ...]
+    available_modules: tuple[str, ...]
     processed_files: tuple[str, ...]
     findings: tuple[ReviewFinding, ...]
     file_plot_caches: dict[str, ReviewFilePlotCache]
+    cleanup_summaries_by_file: dict[str, tuple[ReviewCleanupFunctionSummary, ...]]
     outlier_mad_multiplier: float
     yield_threshold: float
     cpk_low: float
     cpk_high: float
     encoding: str
+    waterfall_cleanup_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -1610,6 +1811,9 @@ class ReviewFilePlotCache:
     data_frame: Any
     meta_cols: Any
     available_test_cols: frozenset[str]
+    active_mask_by_test_col: dict[str, Any] | None = None
+    function_index_by_test_name: dict[str, int] | None = None
+    waterfall_cleanup_enabled: bool = False
 
 
 def _normalize_review_decision(value: str | None) -> str:
@@ -2564,20 +2768,127 @@ def _add_overview_sheet(
     ws.freeze_panes = "A3"
 
 
+def _add_cleanup_summary_sheet(
+    workbook,
+    *,
+    dataset: ReviewDataset,
+    file_sheet_names: dict[str, str],
+) -> None:
+    from openpyxl.formatting.rule import ColorScaleRule
+    from openpyxl.styles import Font, PatternFill
+
+    if "Cleanup Summary" in workbook.sheetnames:
+        workbook.remove(workbook["Cleanup Summary"])
+
+    cleanup_entries = [
+        (file_name, cleanup_items)
+        for file_name, cleanup_items in dataset.cleanup_summaries_by_file.items()
+        if cleanup_items
+    ]
+    if not cleanup_entries:
+        return
+
+    sheet_index = 1 if "Overview" in workbook.sheetnames else 0
+    ws = workbook.create_sheet("Cleanup Summary", sheet_index)
+    ws.sheet_properties.tabColor = "5B9BD5"
+
+    title_fill = PatternFill(patternType="solid", fgColor="D9EAF7")
+    section_fill = PatternFill(patternType="solid", fgColor="E2F0D9")
+    link_font = Font(color="0000EE", underline="single")
+
+    ws["A1"] = "Waterfall Cleanup Summary"
+    ws["A1"].font = Font(bold=True, size=16)
+    ws["A1"].fill = title_fill
+
+    cleanup_enabled_label = "Enabled" if dataset.waterfall_cleanup_enabled else "Disabled"
+    total_functions = sum(len(items) for _, items in cleanup_entries)
+    total_removed = sum(item.removed_chip_count for _, items in cleanup_entries for item in items)
+    files_with_cleanup = sum(1 for _, items in cleanup_entries if any(item.removed_chip_count > 0 for item in items))
+
+    summary_rows = [
+        ("Waterfall cleanup", cleanup_enabled_label),
+        ("Files in cleanup summary", len(cleanup_entries)),
+        ("Files with removed chips", files_with_cleanup),
+        ("Reviewed functions", total_functions),
+        ("Total removed chips", total_removed),
+    ]
+    for row_idx, (label, value) in enumerate(summary_rows, start=3):
+        ws.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=row_idx, column=2, value=value)
+
+    row_cursor = 10
+    ws.cell(row=row_cursor, column=1, value="Function-by-function cleanup").font = Font(bold=True, size=12)
+    ws.cell(row=row_cursor, column=1).fill = section_fill
+    row_cursor += 1
+
+    headers = [
+        "File",
+        "Function Index",
+        "Function Label",
+        "Reviewed Tests",
+        "Removed Chips",
+        "Remaining Active Chips",
+        "Data sheet",
+    ]
+    for col_idx, header in enumerate(headers, start=1):
+        ws.cell(row=row_cursor, column=col_idx, value=header).font = Font(bold=True)
+    row_cursor += 1
+
+    previous_file_name: str | None = None
+    for file_name, cleanup_items in sorted(cleanup_entries, key=lambda item: item[0]):
+        if previous_file_name is not None and file_name != previous_file_name:
+            row_cursor += 1
+        for item in cleanup_items:
+            ws.cell(row=row_cursor, column=1, value=file_name)
+            ws.cell(row=row_cursor, column=2, value=item.function_index)
+            ws.cell(row=row_cursor, column=3, value=item.function_label)
+            ws.cell(row=row_cursor, column=4, value=item.reviewed_test_count)
+            ws.cell(row=row_cursor, column=5, value=item.removed_chip_count)
+            ws.cell(row=row_cursor, column=6, value=item.remaining_chip_count)
+            sheet_name = file_sheet_names.get(file_name)
+            if sheet_name:
+                sheet_cell = ws.cell(row=row_cursor, column=7, value="Open")
+                sheet_cell.hyperlink = f"#{_excel_internal_sheet_ref(sheet_name)}!A1"
+                sheet_cell.font = link_font
+            previous_file_name = file_name
+            row_cursor += 1
+
+    data_start_row = 12
+    data_end_row = row_cursor - 1
+    if data_end_row >= data_start_row:
+        for col_idx in (4, 5, 6):
+            col_letter = _excel_col_letter(col_idx)
+            ws.conditional_formatting.add(
+                f"{col_letter}{data_start_row}:{col_letter}{data_end_row}",
+                ColorScaleRule(
+                    start_type="min",
+                    start_color="FFFFFF",
+                    end_type="max",
+                    end_color="F8696B",
+                ),
+            )
+
+    ws.freeze_panes = "A11"
+    ws.auto_filter.ref = f"A11:{_excel_col_letter(ws.max_column)}{ws.max_row}"
+    _autofit_openpyxl_columns(ws)
+
+
 def collect_review_dataset(
     *,
     input_folder: Path,
     output_folder: Path,
-    modules: list[str],
+    modules: list[str] | None,
     outlier_mad_multiplier: float,
     yield_threshold: float,
     cpk_low: float,
     cpk_high: float,
     max_files: int | None,
     single_file: str | None,
+    selected_csv_paths: Iterable[Path] | None = None,
     encoding: str = DEFAULT_ENCODING,
     show_progress: bool = False,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    waterfall_cleanup_enabled: bool = True,
 ) -> ReviewDataset:
     import numpy as np
     import pandas as pd
@@ -2586,18 +2897,20 @@ def collect_review_dataset(
         input_folder,
         single_file=single_file,
         max_files=max_files,
+        selected_csv_paths=selected_csv_paths,
     )
     if not csv_paths:
         raise SystemExit(f"No .csv files found in: {input_folder}")
 
-    modules_upper = tuple(m.strip().upper() for m in modules if m.strip())
-    if not modules_upper:
-        raise SystemExit("No modules provided. Example: --modules DPLL,TXPA,TXLO")
+    modules_upper = tuple(m.strip().upper() for m in (modules or []) if m.strip())
 
     findings: list[ReviewFinding] = []
     file_plot_caches: dict[str, ReviewFilePlotCache] = {}
+    cleanup_summaries_by_file: dict[str, tuple[ReviewCleanupFunctionSummary, ...]] = {}
     data_sheet_names: list[str] = []
     total_files = len(csv_paths)
+    available_modules: list[str] = []
+    available_modules_seen: set[str] = set()
 
     if progress_callback is not None:
         progress_callback(
@@ -2626,13 +2939,35 @@ def collect_review_dataset(
         temp_label = _parse_insertion_temperature_label(file_path.name)
         report_file_label = _build_report_file_label(file_path.name, file_idx)
 
+        test_name_by_col = {test_col: _test_name_from_meta(meta, test_col) for test_col in meta.numeric_test_cols}
+        function_segments, function_index_by_test_name = _build_test_function_segments(meta, test_name_by_col=test_name_by_col)
+        review_test_names_in_order = [
+            test_name_by_col[test_col]
+            for segment in function_segments
+            for test_col in segment.review_test_cols
+        ]
+        file_module_order = _ordered_modules_from_test_names(review_test_names_in_order)
+        for module_name in file_module_order:
+            if module_name in available_modules_seen:
+                continue
+            available_modules_seen.add(module_name)
+            available_modules.append(module_name)
+
+        effective_modules = modules_upper or file_module_order
+        if not effective_modules:
+            if show_progress:
+                _print_progress("Review files", file_idx, total_files, f"skipped {file_path.name}")
+            continue
+
         interest_cols: list[str] = []
         interest_names: dict[str, str] = {}
         interest_modules: dict[str, str] = {}
         for test_col in meta.numeric_test_cols:
-            test_name = _test_name_from_meta(meta, test_col)
+            test_name = test_name_by_col[test_col]
+            if _is_test_function_time_marker(test_name, meta.meta_rows.get("Unit", {}).get(test_col)):
+                continue
             module = _module_from_test_name(test_name)
-            if module in modules_upper:
+            if module in effective_modules:
                 interest_cols.append(test_col)
                 interest_names[test_col] = test_name
                 interest_modules[test_col] = module
@@ -2669,31 +3004,84 @@ def collect_review_dataset(
         affected: list[str] = []
         assessment_by_col: dict[str, TestMetricAssessment] = {}
         numeric_series_by_col: dict[str, Any] = {}
+        meta_cols_by_col: dict[str, Any] = {}
+        active_mask_by_col: dict[str, Any] = {}
         yield_by_col: dict[str, float | None] = {}
         cpk_by_col: dict[str, float | None] = {}
-        for test_col in interest_cols:
-            numeric_series = pd.to_numeric(df_units[test_col], errors="coerce")
-            yield_pct, cpk = _yield_cpk_from_meta(meta, test_col)
-            yield_by_col[test_col] = yield_pct
-            cpk_by_col[test_col] = cpk
-            _, _, unit = _limits_from_meta(meta, test_col)
-            assessment = _assess_test_metrics(
-                series=numeric_series,
-                meta_cols=meta_cols_df,
-                unit=unit,
-                yield_pct=yield_pct,
-                cpk=cpk,
-                yield_threshold=yield_threshold,
-                cpk_low=cpk_low,
-                cpk_high=cpk_high,
-                wafer_sig=wafer_sig,
-            )
-            assessment_by_col[test_col] = assessment
-            if assessment.status_text:
-                affected.append(test_col)
-                numeric_series_by_col[test_col] = numeric_series
+        finding_function_index_by_col: dict[str, int] = {}
+        finding_function_label_by_col: dict[str, str] = {}
+        cleanup_removed_before_review_by_col: dict[str, int] = {}
+        active_mask = pd.Series(True, index=df_units.index, dtype=bool)
+        cleanup_summaries: list[ReviewCleanupFunctionSummary] = []
+        interest_col_set = set(interest_cols)
+        total_units = int(df_units.shape[0])
 
-        affected.sort(key=lambda col: (interest_modules.get(col, ""), int(col)))
+        for function_segment in function_segments:
+            selected_function_cols = [test_col for test_col in function_segment.review_test_cols if test_col in interest_col_set]
+            function_active_mask = active_mask.copy()
+            removed_before_review = int(total_units - int(function_active_mask.sum()))
+
+            for test_col in selected_function_cols:
+                low, high, unit = _limits_from_meta(meta, test_col)
+                numeric_series_full = pd.to_numeric(df_units[test_col], errors="coerce")
+                numeric_series = numeric_series_full.loc[function_active_mask]
+                function_meta_cols = meta_cols_df.loc[function_active_mask].copy() if not meta_cols_df.empty else meta_cols_df
+
+                yield_pct_meta, cpk_meta = _yield_cpk_from_meta(meta, test_col)
+                yield_pct_calc, cpk_calc = _yield_cpk_from_series(
+                    numeric_series,
+                    low_limit=low,
+                    high_limit=high,
+                )
+                yield_pct = yield_pct_calc if waterfall_cleanup_enabled else yield_pct_meta
+                cpk = cpk_calc if waterfall_cleanup_enabled else cpk_meta
+                yield_by_col[test_col] = yield_pct
+                cpk_by_col[test_col] = cpk
+
+                assessment = _assess_test_metrics(
+                    series=numeric_series,
+                    meta_cols=function_meta_cols,
+                    unit=unit,
+                    yield_pct=yield_pct,
+                    cpk=cpk,
+                    yield_threshold=yield_threshold,
+                    cpk_low=cpk_low,
+                    cpk_high=cpk_high,
+                    wafer_sig=wafer_sig,
+                )
+                assessment_by_col[test_col] = assessment
+                finding_function_index_by_col[test_col] = function_segment.index
+                finding_function_label_by_col[test_col] = function_segment.label
+                cleanup_removed_before_review_by_col[test_col] = removed_before_review
+
+                if assessment.status_text:
+                    affected.append(test_col)
+                    numeric_series_by_col[test_col] = numeric_series
+                    meta_cols_by_col[test_col] = function_meta_cols
+                    active_mask_by_col[str(test_col)] = function_active_mask.copy()
+
+            removed_chip_count = 0
+            if waterfall_cleanup_enabled:
+                removal_mask = _cleanup_removal_mask_for_function(
+                    meta_cols_df,
+                    function_test_names=function_segment.all_test_names,
+                )
+                function_removal_mask = function_active_mask & removal_mask
+                removed_chip_count = int(function_removal_mask.sum())
+                active_mask = function_active_mask & ~function_removal_mask
+
+            if selected_function_cols:
+                cleanup_summaries.append(
+                    ReviewCleanupFunctionSummary(
+                        file_name=file_path.name,
+                        function_index=function_segment.index,
+                        function_label=function_segment.label,
+                        reviewed_test_count=len(selected_function_cols),
+                        removed_chip_count=removed_chip_count,
+                        remaining_chip_count=int(active_mask.sum()),
+                    )
+                )
+
         if not affected:
             if show_progress:
                 _print_progress("Review files", file_idx, total_files, f"skipped {file_path.name}")
@@ -2707,7 +3095,11 @@ def collect_review_dataset(
             data_frame=cache_df,
             meta_cols=cache_meta_cols_df,
             available_test_cols=frozenset(affected),
+            active_mask_by_test_col=active_mask_by_col,
+            function_index_by_test_name=dict(function_index_by_test_name),
+            waterfall_cleanup_enabled=waterfall_cleanup_enabled,
         )
+        cleanup_summaries_by_file[file_path.name] = tuple(cleanup_summaries)
 
         sheet_name = _unique_sheet_name(report_file_label, data_sheet_names)
         data_sheet_names.append(sheet_name)
@@ -2742,6 +3134,7 @@ def collect_review_dataset(
             assessment = assessment_by_col[test_col]
             metric_key_set = set(assessment.metric_keys)
             numeric = numeric_series_by_col[test_col]
+            test_meta_cols = meta_cols_by_col.get(test_col, meta_cols_df)
             finite = numeric.dropna().to_numpy(dtype=float)
             finite = finite[np.isfinite(finite)]
             if finite.size == 0:
@@ -2766,7 +3159,7 @@ def collect_review_dataset(
             if METRIC_YIELD in metric_key_set:
                 fail_coordinates = _format_fail_coordinates_for_sheet(
                     numeric,
-                    meta_cols=meta_cols_df,
+                    meta_cols=test_meta_cols,
                     low_limit=low,
                     high_limit=high,
                 )
@@ -2790,7 +3183,7 @@ def collect_review_dataset(
                     fail_coordinates=fail_coordinates,
                     findings=_build_comment(
                         series=numeric,
-                        meta_cols=meta_cols_df,
+                        meta_cols=test_meta_cols,
                         outlier_mad_multiplier=outlier_mad_multiplier,
                         low_limit=low,
                         high_limit=high,
@@ -2806,6 +3199,9 @@ def collect_review_dataset(
                     ltl_12s=l12,
                     utl_12s=u12,
                     temp_label=temp_label,
+                    function_index=finding_function_index_by_col.get(test_col, 0),
+                    function_label=finding_function_label_by_col.get(test_col, ""),
+                    cleanup_removed_before_review=cleanup_removed_before_review_by_col.get(test_col, 0),
                 )
             )
 
@@ -2837,15 +3233,18 @@ def collect_review_dataset(
     return ReviewDataset(
         input_folder=input_folder,
         output_folder=output_folder,
-        modules=tuple(modules_upper),
+        modules=tuple(modules_upper or available_modules),
+        available_modules=tuple(available_modules),
         processed_files=tuple(path.name for path in csv_paths),
         findings=tuple(findings),
         file_plot_caches=file_plot_caches,
+        cleanup_summaries_by_file=cleanup_summaries_by_file,
         outlier_mad_multiplier=float(outlier_mad_multiplier),
         yield_threshold=float(yield_threshold),
         cpk_low=float(cpk_low),
         cpk_high=float(cpk_high),
         encoding=str(encoding),
+        waterfall_cleanup_enabled=bool(waterfall_cleanup_enabled),
     )
 
 
@@ -2869,6 +3268,7 @@ def export_review_dataset_workbook(
     wb = Workbook()
     wb.remove(wb.active)
     overview_entries: list[dict[str, Any]] = []
+    file_sheet_names: dict[str, str] = {}
     metric_header_fill = PatternFill(patternType="solid", fgColor="FFFF00")
     rotated_metric_alignment = Alignment(horizontal="center", vertical="center", textRotation=90)
     yes_fill = PatternFill(patternType="solid", fgColor="FFC7CE")
@@ -2928,6 +3328,7 @@ def export_review_dataset_workbook(
             continue
 
         ws = wb.create_sheet(sheet_name)
+        file_sheet_names.setdefault(sheet_findings[0].file_name, sheet_name)
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
@@ -3070,6 +3471,12 @@ def export_review_dataset_workbook(
             output_folder=destination_path.parent,
             include_plots_sheet_column=False,
         )
+    if dataset.cleanup_summaries_by_file:
+        _add_cleanup_summary_sheet(
+            wb,
+            dataset=dataset,
+            file_sheet_names=file_sheet_names,
+        )
 
     try:
         wb.save(destination_path)
@@ -3179,6 +3586,10 @@ def load_review_plot_data(
         df = file_cache.data_frame
         numeric = pd.to_numeric(df[test_col_name], errors="coerce")
         meta_cols_df = file_cache.meta_cols.copy() if getattr(file_cache.meta_cols, "empty", False) is False else pd.DataFrame(index=df.index)
+        active_mask = None if file_cache.active_mask_by_test_col is None else file_cache.active_mask_by_test_col.get(test_col_name)
+        if active_mask is not None:
+            numeric = numeric.loc[active_mask]
+            meta_cols_df = meta_cols_df.loc[active_mask].copy() if not meta_cols_df.empty else meta_cols_df
     else:
         meta = scan_flat_file_meta(finding.file_path, encoding=encoding)
         wanted_meta_cols = [c for c in ("SITE_NUM", "WAFER", "X", "Y") if c in meta.header]
@@ -3235,6 +3646,9 @@ def load_review_file_plot_cache(
         data_frame=df,
         meta_cols=meta_cols_df,
         available_test_cols=frozenset(unique_test_cols),
+        active_mask_by_test_col=None,
+        function_index_by_test_name=None,
+        waterfall_cleanup_enabled=False,
     )
 
 
