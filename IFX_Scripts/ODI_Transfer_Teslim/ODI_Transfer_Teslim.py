@@ -48,11 +48,11 @@ class OdiImportConfig:
 CONFIG = OdiImportConfig(
 	# Reference workbook (the repo contains CTRX8188A_TE_TX.xlsx)
 	#reference_xlsx=Path(__file__).resolve().parents[2] / "CTRX8188A_TE_TX.xlsx",
-	reference_xlsx=Path(r"C:\UserData\Learning\Software_Programming\GitHub_Nelio92\Tasks_Automation_Code\IFX_Scripts\ODI_Transfer_Teslim\CTRX8188A_TE_TX.xlsx"),
+	reference_xlsx=Path(r"C:\UserData\Learning\Software_Programming\GitHub_Nelio92\Tasks_Automation_Code\IFX_Scripts\ODI_Transfer_Teslim\CTRX8144A_TE_TX.xlsx"),
 
 	# Output file to generate
 	#output_csv=Path(__file__).resolve().parents[2] / "ODIs_TX.csv",
-	output_csv=Path(r"C:\UserData\Learning\Software_Programming\GitHub_Nelio92\Tasks_Automation_Code\IFX_Scripts\ODI_Transfer_Teslim\ODIs_TX.csv"),
+	output_csv=Path(r"C:\UserData\Learning\Software_Programming\GitHub_Nelio92\Tasks_Automation_Code\IFX_Scripts\ODI_Transfer_Teslim\8144_ODIs_TX.csv"),
 
 	# Optional filters (examples):
 	# modules={"DPLL", "TXGE"},
@@ -61,13 +61,13 @@ CONFIG = OdiImportConfig(
 	#odi_columns=None,
     #modules={"TXGE","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS"},
 	#odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
-	modules={"TXGE","TXPA","TXPB","TXPC","TXLO"},
+	modules={"TXPA"},
 	odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
 	# Output metadata
-	comment="Updates from the Test-Q data",
-	jira_tasks="RSIPPTE-710",
+	comment="Updates for TXPA on the Test-0 issues",
+	jira_tasks="PTE8144-340",
 	odi_source="INS_OFF",
-	test_variants="8188",
+	test_variants="8144",
 )
 
 

@@ -43,3 +43,5 @@ IFX_Scripts/ODI_Transfer_Teslim/CTRX8188A_TE_TX.xlsx
 IFX_Scripts/Test_Data_Reviewer/Issues/z_VQ261413_02-NB001PF_INITIAL_06_Q31P_R2.csv
 IFX_Scripts/Test_Data_Reviewer/Issues/z_VQ261413_03-NB001PFA_INITIAL_06_Q21P_C1.csv
 IFX_Scripts/Test_Data_Reviewer/Issues/z_VQ261413.02-NB001PF_INITIAL_05_Q11P_N1.csv
+IFX_Scripts/ODI_Transfer_Teslim/8144_ODIs_TX.csv
+IFX_Scripts/ODI_Transfer_Teslim/CTRX8144A_TE_TX.xlsx
