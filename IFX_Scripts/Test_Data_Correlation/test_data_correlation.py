@@ -22,7 +22,7 @@ DEFAULT_ENCODING = "latin1"
 DELIMITER = ";"
 
 # User-configurable defaults. Command-line arguments can override these values.
-SCRIPT_FOLDER = Path(__file__).resolve().parent
+SCRIPT_FOLDER = Path(r"C:\UserData\Learning\Software_Programming\GitHub_Nelio92\Tasks_Automation_Code\IFX_Scripts\Test_Data_Correlation").resolve().parent
 INPUT_FOLDER = SCRIPT_FOLDER
 OUTPUT_FILE: Path | None = None
 
