@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="360" viewBox="0 0 980 360" role="img" aria-labelledby="title desc">
+  <title id="title">Pearson and Spearman examples</title>
+  <desc id="desc">Two mini scatter plots comparing linear and monotonic relationships.</desc>
+  <style>
+    .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 8; }
+    .axis { stroke: #334155; stroke-width: 1.8; }
+    .grid { stroke: #e2e8f0; stroke-width: 1; }
+    .dot { fill: #2563eb; opacity: 0.85; }
+    .line { stroke: #dc2626; stroke-width: 2.5; fill: none; }
+    .title { fill: #111827; font: 700 20px Arial, sans-serif; }
+    .label { fill: #334155; font: 14px Arial, sans-serif; }
+    .caption { fill: #475569; font: 15px Arial, sans-serif; }
+  </style>
+  <text x="490" y="32" text-anchor="middle" class="title">How the Two Correlation Methods Read the Same Data</text>
+  <rect x="70" y="62" width="390" height="245" class="panel" />
+  <text x="265" y="92" text-anchor="middle" class="title">Linear Relationship</text>
+  <line x1="120" y1="265" x2="405" y2="265" class="axis" />
+  <line x1="120" y1="265" x2="120" y2="120" class="axis" />
+  <path d="M130 255 L395 130" class="line" />
+  <g>
+    <circle cx="138" cy="249" r="5" class="dot" /><circle cx="164" cy="235" r="5" class="dot" />
+    <circle cx="191" cy="225" r="5" class="dot" /><circle cx="218" cy="210" r="5" class="dot" />
+    <circle cx="244" cy="198" r="5" class="dot" /><circle cx="271" cy="184" r="5" class="dot" />
+    <circle cx="298" cy="174" r="5" class="dot" /><circle cx="325" cy="158" r="5" class="dot" />
+    <circle cx="351" cy="147" r="5" class="dot" /><circle cx="378" cy="134" r="5" class="dot" />
+  </g>
+  <text x="265" y="333" text-anchor="middle" class="caption">Pearson and Spearman are both high.</text>
+  <rect x="520" y="62" width="390" height="245" class="panel" />
+  <text x="715" y="92" text-anchor="middle" class="title">Monotonic Curved Relationship</text>
+  <line x1="570" y1="265" x2="855" y2="265" class="axis" />
+  <line x1="570" y1="265" x2="570" y2="120" class="axis" />
+  <path d="M585 250 C650 248, 710 216, 845 130" class="line" />
+  <g>
+    <circle cx="590" cy="250" r="5" class="dot" /><circle cx="617" cy="246" r="5" class="dot" />
+    <circle cx="644" cy="239" r="5" class="dot" /><circle cx="671" cy="229" r="5" class="dot" />
+    <circle cx="698" cy="216" r="5" class="dot" /><circle cx="725" cy="201" r="5" class="dot" />
+    <circle cx="752" cy="184" r="5" class="dot" /><circle cx="779" cy="166" r="5" class="dot" />
+    <circle cx="806" cy="148" r="5" class="dot" /><circle cx="833" cy="132" r="5" class="dot" />
+  </g>
+  <text x="715" y="333" text-anchor="middle" class="caption">Spearman stays high when the ordering is consistent.</text>
+</svg>

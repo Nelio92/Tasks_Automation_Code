@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="260" viewBox="0 0 980 260" role="img" aria-labelledby="title desc">
+  <title id="title">Correlation strength scale</title>
+  <desc id="desc">Visual scale showing no, weak, moderate, and strong correlation bands from -1 to +1.</desc>
+  <style>
+    .axis { stroke: #1f2937; stroke-width: 2; }
+    .tick { stroke: #1f2937; stroke-width: 1.4; }
+    .label { fill: #1f2937; font: 14px Arial, sans-serif; }
+    .title { fill: #111827; font: 700 20px Arial, sans-serif; }
+    .band { opacity: 0.92; }
+  </style>
+  <text x="490" y="32" text-anchor="middle" class="title">Absolute Correlation Assessment Bands</text>
+  <rect x="80" y="92" width="820" height="52" fill="#e5e7eb" rx="7" />
+  <rect x="80" y="92" width="82" height="52" fill="#b7e1cd" class="band" rx="7" />
+  <rect x="162" y="92" width="123" height="52" fill="#fce8b2" class="band" />
+  <rect x="285" y="92" width="82" height="52" fill="#f9cb9c" class="band" />
+  <rect x="613" y="92" width="82" height="52" fill="#f9cb9c" class="band" />
+  <rect x="695" y="92" width="123" height="52" fill="#fce8b2" class="band" />
+  <rect x="818" y="92" width="82" height="52" fill="#b7e1cd" class="band" rx="7" />
+  <line x1="80" y1="165" x2="900" y2="165" class="axis" />
+  <g class="label" text-anchor="middle">
+    <line x1="80" y1="157" x2="80" y2="176" class="tick" /><text x="80" y="198">-1.0</text>
+    <line x1="162" y1="157" x2="162" y2="176" class="tick" /><text x="162" y="198">-0.8</text>
+    <line x1="285" y1="157" x2="285" y2="176" class="tick" /><text x="285" y="198">-0.5</text>
+    <line x1="367" y1="157" x2="367" y2="176" class="tick" /><text x="367" y="198">-0.3</text>
+    <line x1="490" y1="157" x2="490" y2="176" class="tick" /><text x="490" y="198">0</text>
+    <line x1="613" y1="157" x2="613" y2="176" class="tick" /><text x="613" y="198">+0.3</text>
+    <line x1="695" y1="157" x2="695" y2="176" class="tick" /><text x="695" y="198">+0.5</text>
+    <line x1="818" y1="157" x2="818" y2="176" class="tick" /><text x="818" y="198">+0.8</text>
+    <line x1="900" y1="157" x2="900" y2="176" class="tick" /><text x="900" y="198">+1.0</text>
+  </g>
+  <g class="label" text-anchor="middle">
+    <text x="121" y="123">strong</text>
+    <text x="224" y="123">moderate</text>
+    <text x="326" y="123">weak</text>
+    <text x="490" y="123">no correlation</text>
+    <text x="654" y="123">weak</text>
+    <text x="756" y="123">moderate</text>
+    <text x="859" y="123">strong</text>
+  </g>
+</svg>

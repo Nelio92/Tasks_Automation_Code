@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="250" viewBox="0 0 980 250" role="img" aria-labelledby="title desc">
+  <title id="title">Correlation workflow</title>
+  <desc id="desc">CSV files are scanned, numeric measurements are extracted, correlations are calculated, strong pairs are filtered, and Excel sheets are written.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#34495e" />
+    </marker>
+    <style>
+      .box { fill: #f7fbff; stroke: #2f6f9f; stroke-width: 2; rx: 8; }
+      .title { fill: #17324d; font: 700 18px Arial, sans-serif; }
+      .body { fill: #334155; font: 14px Arial, sans-serif; }
+      .arrow { stroke: #34495e; stroke-width: 2.4; marker-end: url(#arrow); fill: none; }
+    </style>
+  </defs>
+  <rect x="25" y="55" width="160" height="110" class="box" />
+  <text x="105" y="88" text-anchor="middle" class="title">Input CSVs</text>
+  <text x="105" y="118" text-anchor="middle" class="body">semicolon flat</text>
+  <text x="105" y="140" text-anchor="middle" class="body">datalogs</text>
+  <path d="M185 110 H250" class="arrow" />
+  <rect x="250" y="55" width="170" height="110" class="box" />
+  <text x="335" y="88" text-anchor="middle" class="title">Header Scan</text>
+  <text x="335" y="118" text-anchor="middle" class="body">test numbers</text>
+  <text x="335" y="140" text-anchor="middle" class="body">and names</text>
+  <path d="M420 110 H485" class="arrow" />
+  <rect x="485" y="55" width="170" height="110" class="box" />
+  <text x="570" y="88" text-anchor="middle" class="title">Correlate</text>
+  <text x="570" y="118" text-anchor="middle" class="body">Pearson and</text>
+  <text x="570" y="140" text-anchor="middle" class="body">Spearman</text>
+  <path d="M655 110 H720" class="arrow" />
+  <rect x="720" y="55" width="190" height="110" class="box" />
+  <text x="815" y="88" text-anchor="middle" class="title">Excel Output</text>
+  <text x="815" y="118" text-anchor="middle" class="body">one sheet per</text>
+  <text x="815" y="140" text-anchor="middle" class="body">input file</text>
+  <text x="490" y="215" text-anchor="middle" class="body">Rows are written only when abs(Pearson) or abs(Spearman) is at least the configured threshold.</text>
+</svg>
