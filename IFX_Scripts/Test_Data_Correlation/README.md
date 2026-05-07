@@ -95,6 +95,8 @@ Each workbook sheet uses this column order:
 
 Excel filters are enabled automatically on every sheet, the top row is frozen, and column widths are fitted after data is written. This makes it possible to open the workbook and immediately filter by a particular test number or test name.
 
+While the script runs, the terminal shows percentage progress for the current workbook file count and for the Excel row-writing phase of each file.
+
 ## Assessment Heuristic
 
 The assessment uses the strongest absolute value from Pearson and Spearman:

@@ -22,7 +22,7 @@ DEFAULT_ENCODING = "latin1"
 DELIMITER = ";"
 
 # User-configurable defaults. Command-line arguments can override these values.
-SCRIPT_FOLDER = Path(r"C:\UserData\Learning\Software_Programming\GitHub_Nelio92\Tasks_Automation_Code\IFX_Scripts\Test_Data_Correlation").resolve().parent
+SCRIPT_FOLDER = Path(__file__).resolve().parent
 INPUT_FOLDER = SCRIPT_FOLDER
 OUTPUT_FILE: Path | None = None
 
@@ -157,6 +157,15 @@ def _assessment(*values: float | None) -> str:
     return "no correlation"
 
 
+def _print_progress(label: str, current: int, total: int, *, end: str = "\n") -> None:
+    if total <= 0:
+        return
+
+    clamped_current = min(max(current, 0), total)
+    percent = clamped_current / total * 100.0
+    print(f"\r  {label}: {percent:6.2f}% ({clamped_current}/{total})", end=end, flush=True)
+
+
 def scan_flat_file_meta(
     file_path: Path,
     *,
@@ -253,17 +262,23 @@ def _append_correlation_rows(
 ) -> tuple[int, bool]:
     import numpy as np
 
+    _print_progress("Current file progress", 0, 100)
     df = _drop_non_correlatable_tests(df, min_paired_values=min_paired_values)
     if df.shape[1] < 2:
+        _print_progress("Current file progress", 100, 100)
         return 0, False
 
     print(f"  Correlatable tests: {df.shape[1]}")
+    _print_progress("Current file progress", 10, 100)
     print("  Calculating Pearson matrix...")
     pearson_corr = df.corr(method="pearson", min_periods=min_paired_values)
+    _print_progress("Current file progress", 35, 100)
     print("  Ranking values for Spearman matrix...")
     ranked_df = df.rank(axis=0, method="average", na_option="keep")
+    _print_progress("Current file progress", 45, 100)
     print("  Calculating Spearman matrix...")
     spearman_corr = ranked_df.corr(method="pearson", min_periods=min_paired_values)
+    _print_progress("Current file progress", 70, 100)
     print("  Filtering strong pairs...")
 
     pearson_values = pearson_corr.to_numpy(dtype=float)
@@ -272,6 +287,7 @@ def _append_correlation_rows(
     strong_mask &= np.triu(np.ones(strong_mask.shape, dtype=bool), k=1)
     row_indices, col_indices = np.where(strong_mask)
     if row_indices.size == 0:
+        _print_progress("Current file progress", 100, 100)
         return 0, False
 
     pearson_pair_values = pearson_values[row_indices, col_indices]
@@ -281,10 +297,14 @@ def _append_correlation_rows(
         np.nan_to_num(np.abs(spearman_pair_values), nan=-np.inf),
     )
     order = np.argsort(-strengths, kind="stable")
+    _print_progress("Current file progress", 80, 100)
 
     columns = list(df.columns)
     output_rows = 0
     truncated = False
+    rows_to_write = min(int(order.size), max_rows_per_sheet)
+    last_progress_percent = -1
+    _print_progress("Writing Excel rows", 0, rows_to_write, end="")
     for order_idx in order:
         if output_rows >= max_rows_per_sheet:
             truncated = True
@@ -311,6 +331,14 @@ def _append_correlation_rows(
             ]
         )
         output_rows += 1
+
+        current_progress_percent = int(output_rows * 100 / rows_to_write)
+        if current_progress_percent != last_progress_percent or output_rows == rows_to_write:
+            _print_progress("Writing Excel rows", output_rows, rows_to_write, end="")
+            last_progress_percent = current_progress_percent
+
+    print()
+    _print_progress("Current file progress", 100, 100)
 
     return output_rows, truncated
 
@@ -400,6 +428,7 @@ def generate_correlation_workbook(
     total_files = len(csv_paths)
     for file_idx, file_path in enumerate(csv_paths, start=1):
         print(f"[{file_idx}/{total_files}] Processing {file_path.name}")
+        _print_progress("Overall file progress", file_idx - 1, total_files)
         ws = wb.create_sheet(_unique_sheet_name(file_path.stem, wb.sheetnames))
         ws.append(RESULT_HEADERS)
 
@@ -424,6 +453,7 @@ def generate_correlation_workbook(
             print(f"  Recorded {out_rows} correlation pair(s){trunc_msg}")
 
         _style_sheet(ws)
+        _print_progress("Overall file progress", file_idx, total_files)
 
     try:
         wb.save(output_file)
