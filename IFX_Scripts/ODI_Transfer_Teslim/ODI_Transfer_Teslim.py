@@ -61,11 +61,11 @@ CONFIG = OdiImportConfig(
 	#odi_columns=None,
     #modules={"TXGE","DPLL","TXPA","TXPB","TXPC","TXPD","TXLO","TXPS"},
 	#odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
-	modules={"TXPA"},
+	modules={"TXGE","DPLL","TXPA","TXPB","TXPC","TXPD","TXPS"},
 	odi_columns={"ODI LTL S1","ODI UTL S1","ODI LTL S2","ODI UTL S2","ODI LTL B1","ODI UTL B1","ODI LTL B2","ODI UTL B2","ODI LTL Q1","ODI UTL Q1","ODI LTL Q2","ODI UTL Q2","ODI LTL Q3","ODI UTL Q3"},
 	# Output metadata
-	comment="Updates for TXPA on the Test-0 issues",
-	jira_tasks="PTE8144-340",
+	comment="Updates on the Test-0 limits issues",
+	jira_tasks="PTE8144-341,PTE8144-383",
 	odi_source="INS_OFF",
 	test_variants="8144",
 )
